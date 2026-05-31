@@ -20,6 +20,16 @@ class TinyGenerator(nn.Module):
         return {"image": sr, "pyramid": {1: sr}}
 
 
+class CountingSGD(torch.optim.SGD):
+    def __init__(self, params, *args, **kwargs) -> None:
+        super().__init__(params, *args, **kwargs)
+        self.step_calls = 0
+
+    def step(self, closure=None):
+        self.step_calls += 1
+        return super().step(closure)
+
+
 class TinyDiscriminator(nn.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -55,6 +65,7 @@ def _config(tmp_path):
             "epochs": 1,
             "mixed_precision": False,
             "grad_clip_norm": 1.0,
+            "n_critic": 1,
             "log_every": 1,
             "validate_every": 0,
             "save_every": 0,
@@ -171,3 +182,28 @@ def test_training_step_writes_samples_every_configured_kimg(tmp_path):
     samples = list((tmp_path / "samples").glob("step_*.png"))
     assert len(samples) == 1
     assert trainer.seen_images == 2
+
+
+def test_training_step_honors_n_critic(tmp_path):
+    config = _config(tmp_path)
+    config["training"]["n_critic"] = 3
+    generator = TinyGenerator()
+    discriminator = TinyDiscriminator()
+    optimizer_g = CountingSGD(generator.parameters(), lr=1e-3)
+    optimizer_d = CountingSGD(discriminator.parameters(), lr=1e-3)
+    trainer = Trainer(
+        generator,
+        discriminator,
+        _loader(),
+        config=config,
+        optimizer_g=optimizer_g,
+        optimizer_d=optimizer_d,
+        device="cpu",
+    )
+
+    logs = trainer.train_step(next(iter(_loader())))
+
+    assert trainer.step == 1
+    assert optimizer_d.step_calls == 3
+    assert optimizer_g.step_calls == 1
+    assert torch.isfinite(torch.tensor(logs["loss_d"]))

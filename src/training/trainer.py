@@ -14,6 +14,7 @@ from torch import nn
 from torch.nn.utils import clip_grad_norm_
 from tqdm import tqdm
 
+from src.losses.perceptual import build_perceptual_loss
 from src.losses.r3gan import discriminator_loss, r1_regularization, r2_regularization
 from src.losses.total import generator_losses
 from src.models.discriminator import ResolutionAgnosticDiscriminator
@@ -150,6 +151,12 @@ class Trainer:
             if isinstance(self.config.get("loss", {}), Mapping)
             else {}
         )
+        self.perceptual_loss = None
+        if float(self.loss_config.get("lambda_perceptual", 0.0)) > 0.0:
+            self.perceptual_loss = build_perceptual_loss(self.loss_config).to(
+                self.device
+            )
+            self.perceptual_loss.eval()
         self.step = 0
         self.epoch = 0
         self.seen_images = 0
@@ -259,6 +266,11 @@ class Trainer:
         with self._autocast():
             fake, generated_pyramid = self._generator_forward(lr, hr)
             fake_scores_g = self._discriminate(fake, lr)
+            perceptual_loss = (
+                self.perceptual_loss(fake, hr)
+                if self.perceptual_loss is not None
+                else None
+            )
             g_losses = generator_losses(
                 fake_scores=fake_scores_g,
                 sr=fake,
@@ -266,6 +278,7 @@ class Trainer:
                 lr=lr,
                 generated_pyramid=generated_pyramid,
                 hr_pyramid=hr_pyramid,
+                perceptual_loss=perceptual_loss,
                 weights=self.loss_config,
             )
             loss_g = g_losses["loss_total"]

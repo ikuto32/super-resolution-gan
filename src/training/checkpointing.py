@@ -22,6 +22,7 @@ CHECKPOINT_KEYS = (
     "optimizer_d",
     "scheduler_g",
     "scheduler_d",
+    "grad_scaler",
     "config",
     "rng_state",
 )
@@ -45,6 +46,7 @@ def save_checkpoint(
     generator_ema: EMAGenerator | nn.Module | None = None,
     scheduler_g: Any | None = None,
     scheduler_d: Any | None = None,
+    grad_scaler: Any | None = None,
     config: dict[str, Any] | None = None,
     rng_state: dict[str, Any] | None = None,
     seen_images: int | None = None,
@@ -61,6 +63,7 @@ def save_checkpoint(
         "optimizer_d": optimizer_d.state_dict(),
         "scheduler_g": _maybe_state_dict(scheduler_g),
         "scheduler_d": _maybe_state_dict(scheduler_d),
+        "grad_scaler": _maybe_state_dict(grad_scaler),
         "config": dict(config or {}),
         "rng_state": rng_state if rng_state is not None else get_rng_state(),
     }
@@ -80,6 +83,7 @@ def load_checkpoint(
     generator_ema: EMAGenerator | nn.Module | None = None,
     scheduler_g: Any | None = None,
     scheduler_d: Any | None = None,
+    grad_scaler: Any | None = None,
     map_location: str | torch.device | None = "cpu",
     restore_rng: bool = True,
     strict: bool = True,
@@ -99,6 +103,8 @@ def load_checkpoint(
         scheduler_g.load_state_dict(checkpoint["scheduler_g"])
     if scheduler_d is not None and checkpoint.get("scheduler_d") is not None:
         scheduler_d.load_state_dict(checkpoint["scheduler_d"])
+    if grad_scaler is not None and checkpoint.get("grad_scaler") is not None:
+        grad_scaler.load_state_dict(checkpoint["grad_scaler"])
     if generator_ema is not None and checkpoint.get("generator_ema") is not None:
         generator_ema.load_state_dict(checkpoint["generator_ema"], strict=strict)
     if restore_rng and checkpoint.get("rng_state") is not None:

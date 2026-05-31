@@ -1,6 +1,13 @@
 """Loss functions for super-resolution training."""
 
 from src.losses.consistency import lr_consistency_loss
+from src.losses.diffusion import (
+    degraded_noisy_state,
+    degraded_noisy_state_from_config,
+    denoising_loss,
+    sample_timesteps,
+    timestep_weights,
+)
 from src.losses.perceptual import VGGPerceptualLoss, build_perceptual_loss
 from src.losses.r3gan import (
     discriminator_loss,
@@ -29,6 +36,9 @@ __all__ = [
     "VGGPerceptualLoss",
     "build_perceptual_loss",
     "compute_generator_loss",
+    "degraded_noisy_state",
+    "degraded_noisy_state_from_config",
+    "denoising_loss",
     "discriminator_loss",
     "generator_loss",
     "generator_losses",
@@ -36,7 +46,9 @@ __all__ = [
     "lr_consistency_loss",
     "multi_scale_reconstruction_loss",
     "r1_regularization",
+    "sample_timesteps",
     "r2_regularization",
     "reconstruction_loss",
     "reconstruction_loss_from_config",
+    "timestep_weights",
 ]

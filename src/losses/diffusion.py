@@ -10,6 +10,24 @@ import torch.nn.functional as F
 
 
 _DEFAULT_SCHEDULE = "linear"
+_SUPPORTED_PREDICTION_TYPES = {"x0", "final_residual", "step_residual"}
+
+
+def diffusion_prediction_type(config: Mapping[str, Any] | None = None) -> str:
+    """Return the configured diffusion prediction target type.
+
+    ``step_residual`` is accepted as a reserved config value so experiments can
+    fail explicitly until the degradation state includes consecutive steps.
+    """
+    diffusion = _diffusion_section(config)
+    prediction_type = str(diffusion.get("prediction_type", "x0")).lower()
+    if prediction_type not in _SUPPORTED_PREDICTION_TYPES:
+        supported = ", ".join(sorted(_SUPPORTED_PREDICTION_TYPES))
+        raise ValueError(
+            f"unsupported diffusion prediction_type: {prediction_type!r}; "
+            f"expected one of {supported}"
+        )
+    return prediction_type
 
 
 def _as_float(config: Mapping[str, Any], key: str, default: float) -> float:
@@ -107,7 +125,9 @@ def degraded_noisy_state(
         raise ValueError(f"expected x_b to be BCHW, got shape {tuple(x_b.shape)}")
     batch, _channels, height, width = x_b.shape
     if timesteps is None:
-        timesteps = sample_timesteps(batch, num_timesteps=num_timesteps, device=x_b.device)
+        timesteps = sample_timesteps(
+            batch, num_timesteps=num_timesteps, device=x_b.device
+        )
     else:
         timesteps = timesteps.to(device=x_b.device)
     if timesteps.shape != (batch,):
@@ -183,6 +203,13 @@ def degraded_noisy_state_from_config(
     if not isinstance(degradation_cfg, Mapping):
         degradation_cfg = {}
 
+    prediction_type = diffusion_prediction_type(diffusion)
+    if prediction_type == "step_residual":
+        raise NotImplementedError(
+            "loss.diffusion.prediction_type='step_residual' requires the "
+            "degradation state to expose both G_t x0 and G_{t-1} x0"
+        )
+
     num_timesteps = int(diffusion.get("num_timesteps", 1000))
     if timesteps is None:
         timesteps = sample_timesteps(
@@ -192,19 +219,31 @@ def degraded_noisy_state_from_config(
             mode=str(sampling.get("mode", "uniform")),
         )
 
-    return degraded_noisy_state(
+    downscale = diffusion.get("downscale", degradation_cfg.get("downscale", 4))
+    if prediction_type == "final_residual":
+        downscale = tuple(int(size) for size in x_b.shape[-2:])
+
+    state = degraded_noisy_state(
         x_b,
         timesteps,
-        downscale=diffusion.get("downscale", degradation_cfg.get("downscale", 4)),
+        downscale=downscale,
         num_timesteps=num_timesteps,
         schedule=str(diffusion.get("schedule", _DEFAULT_SCHEDULE)),
-        noise_min=_as_float(noise_cfg, "std_min", _as_float(diffusion, "noise_min", 0.0)),
-        noise_max=_as_float(noise_cfg, "std_max", _as_float(diffusion, "noise_max", 0.1)),
+        noise_min=_as_float(
+            noise_cfg, "std_min", _as_float(diffusion, "noise_min", 0.0)
+        ),
+        noise_max=_as_float(
+            noise_cfg, "std_max", _as_float(diffusion, "noise_max", 0.1)
+        ),
         degradation_min=_as_float(degradation_cfg, "strength_min", 0.0),
         degradation_max=_as_float(degradation_cfg, "strength_max", 0.0),
         mode=str(degradation_cfg.get("mode", diffusion.get("mode", "bicubic"))),
         clamp=tuple(diffusion["clamp"]) if "clamp" in diffusion else None,
     )
+    state["prediction_type"] = prediction_type
+    if prediction_type == "final_residual":
+        state["target"] = x_b - state["x_t"]
+    return state
 
 
 def denoising_loss(
@@ -232,6 +271,7 @@ def denoising_loss(
 
 __all__ = [
     "degraded_noisy_state",
+    "diffusion_prediction_type",
     "degraded_noisy_state_from_config",
     "denoising_loss",
     "sample_timesteps",

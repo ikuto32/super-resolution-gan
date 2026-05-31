@@ -4,9 +4,86 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from src.losses import degraded_noisy_state, denoising_loss, generator_total_loss
+from src.losses import (
+    degraded_noisy_state,
+    degraded_noisy_state_from_config,
+    denoising_loss,
+    generator_total_loss,
+)
 from src.models import ProgressiveSRGenerator
 from src.training import Trainer
+from src.training.trainer import _interpret_diffusion_prediction
+
+
+def test_degraded_noisy_state_from_config_uses_x0_target_by_default():
+    hr = torch.arange(1 * 1 * 4 * 4, dtype=torch.float32).view(1, 1, 4, 4)
+    state = degraded_noisy_state_from_config(
+        hr,
+        {
+            "diffusion": {
+                "num_timesteps": 1,
+                "downscale": 2,
+                "noise": {"std_min": 0.0, "std_max": 0.0},
+                "degradation": {"strength_min": 0.0, "strength_max": 0.0},
+            }
+        },
+        timesteps=torch.tensor([0]),
+    )
+
+    assert state["prediction_type"] == "x0"
+    assert state["x_t"].shape[-2:] == (2, 2)
+    assert torch.equal(state["target"], hr)
+
+
+def test_degraded_noisy_state_from_config_final_residual_target_is_hr_minus_xt():
+    hr = torch.tensor([[[[0.0, 0.25], [0.5, 1.0]]]])
+    state = degraded_noisy_state_from_config(
+        hr,
+        {
+            "diffusion": {
+                "prediction_type": "final_residual",
+                "num_timesteps": 1,
+                "downscale": 8,
+                "noise": {"std_min": 0.0, "std_max": 0.0},
+                "degradation": {"strength_min": 1.0, "strength_max": 1.0},
+            }
+        },
+        timesteps=torch.tensor([0]),
+    )
+
+    expected_target = hr - state["x_t"]
+    assert state["prediction_type"] == "final_residual"
+    assert state["x_t"].shape == hr.shape
+    assert torch.allclose(state["target"], expected_target)
+    assert not torch.allclose(state["target"], hr)
+
+
+def test_trainer_interprets_x0_diffusion_prediction_as_image_target():
+    hr = torch.tensor([[[[1.0, 2.0], [3.0, 4.0]]]])
+    prediction = hr + 0.5
+
+    loss_prediction, target, pred_x0 = _interpret_diffusion_prediction(
+        prediction, {"x_t": torch.zeros_like(hr)}, hr, "x0"
+    )
+
+    assert torch.equal(loss_prediction, prediction)
+    assert torch.equal(target, hr)
+    assert torch.equal(pred_x0, prediction)
+
+
+def test_trainer_interprets_final_residual_prediction_and_reconstructs_x0():
+    hr = torch.tensor([[[[1.0, 2.0], [3.0, 4.0]]]])
+    x_t = torch.tensor([[[[0.25, 1.0], [2.5, 3.0]]]])
+    prediction = torch.full_like(hr, 0.5)
+    target = hr - x_t
+
+    loss_prediction, loss_target, pred_x0 = _interpret_diffusion_prediction(
+        prediction, {"x_t": x_t, "target": target}, hr, "final_residual"
+    )
+
+    assert torch.equal(loss_prediction, prediction)
+    assert torch.equal(loss_target, target)
+    assert torch.allclose(pred_x0, x_t + prediction)
 
 
 def test_diffusion_denoising_loss_is_finite_for_non_power_of_two_sizes():
@@ -153,7 +230,11 @@ def _config(tmp_path, lambda_diffusion: float) -> dict[str, object]:
                 "schedule": "linear",
                 "downscale": 3,
                 "loss_type": "l1",
-                "degradation": {"mode": "bicubic", "strength_min": 0.0, "strength_max": 0.2},
+                "degradation": {
+                    "mode": "bicubic",
+                    "strength_min": 0.0,
+                    "strength_max": 0.2,
+                },
                 "noise": {"std_min": 0.0, "std_max": 0.03},
             },
         },

@@ -5,6 +5,7 @@ from src.losses.diffusion import (
     degraded_noisy_state,
     degraded_noisy_state_from_config,
     denoising_loss,
+    diffusion_prediction_type,
     sample_timesteps,
     timestep_weights,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "degraded_noisy_state",
     "degraded_noisy_state_from_config",
     "denoising_loss",
+    "diffusion_prediction_type",
     "discriminator_loss",
     "generator_loss",
     "generator_losses",

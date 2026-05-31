@@ -13,6 +13,7 @@ dependencies = [
     "torch",
     "torchvision",
     "tqdm",
+    "wandb",
     "pytest",
 ]
 

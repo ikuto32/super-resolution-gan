@@ -123,6 +123,17 @@ degradation:
 
 project:
   output_dir: runs/sr_64_to_256
+
+logging:
+  tensorboard: true
+  wandb:
+    enabled: false
+    project: super-resolution-gan
+
+training:
+  sample_every_kimg: 50
+  sample_max_images: 4
+  sample_dir: samples
 ```
 
 メモリ不足が起きる場合は、まず `data.batch_size`、`data.num_workers`、`model.generator.base_channels`、`model.discriminator.base_channels` を小さくしてください。
@@ -144,6 +155,8 @@ runs/sr_64_to_256/
 │   └── step_XXXXXXXX.pt
 ├── logs/
 │   └── metrics.jsonl
+├── samples/
+│   └── step_XXXXXXXX_kimg_YYY.YYY.png
 └── validation/
     └── step_XXXXXXXX.png
 ```
@@ -176,6 +189,7 @@ training:
   log_every: 1
   validate_every: 10
   save_every: 10
+  sample_every_kimg: 1
 
 model:
   generator:
@@ -216,6 +230,8 @@ uv run ruff format .
 
 - スカラー値は `runs/.../logs/metrics.jsonl` に JSONL 形式で保存されます。
 - `torch.utils.tensorboard` が利用可能な環境では TensorBoard ログも同じログディレクトリに保存されます。
+- `logging.wandb.enabled: true` にすると、スカラーとサンプル画像を Weights & Biases にも送信します。`project`、`entity`、`name`、`mode`、`tags` などは `logging.wandb` 配下で指定できます。
+- `training.sample_every_kimg` が 0 より大きい場合、学習中に指定 kimg（1000 images）ごとに LR upsample / SR / HR を並べたサンプル画像が `runs/.../samples/` に保存され、TensorBoard / W&B にも記録されます。
 - 検証時には LR upsample / SR / HR を横に並べたサンプル画像が `runs/.../validation/` に保存されます。
 - チェックポイントには generator、discriminator、EMA、optimizer、scheduler、config、乱数状態が含まれます。
 

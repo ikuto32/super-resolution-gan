@@ -101,7 +101,7 @@ class ImagePairDataset(Dataset):
             "meta": {
                 "index": index,
                 "hr_path": str(hr_path),
-                "lr_path": str(lr_path) if lr_path is not None else None,
+                "lr_path": str(lr_path) if lr_path is not None else "",
                 "validation": self.validation,
             },
         }

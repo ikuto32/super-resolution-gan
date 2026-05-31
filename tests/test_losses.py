@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import torch
+from torch import nn
+
+import src.losses.perceptual as perceptual_module
 
 from src.losses import (
     LOSS_KEYS,
@@ -90,3 +93,21 @@ def test_generator_total_loss_returns_all_keys_with_optional_zero_losses():
     assert losses["loss_perceptual"].item() == 0.0
     assert losses["loss_consistency"].item() == 0.0
     assert losses["loss_diffusion"].item() == 0.0
+
+
+def test_vgg_perceptual_loss_prepares_minus_one_one_images_for_imagenet(monkeypatch):
+    class TinyVGG:
+        features = nn.Sequential(nn.Identity(), nn.Identity())
+
+    monkeypatch.setattr(perceptual_module, "vgg16", lambda weights=None: TinyVGG())
+    loss = perceptual_module.VGGPerceptualLoss(layers=("relu1_1",))
+
+    images = torch.tensor(
+        [[[[-1.0]], [[0.0]], [[1.0]]]],
+        dtype=torch.float32,
+    )
+    prepared = loss._prepare_for_vgg(images)
+    expected_unit_range = torch.tensor([0.0, 0.5, 1.0]).view(1, 3, 1, 1)
+    expected = (expected_unit_range - loss.mean) / loss.std
+
+    assert torch.allclose(prepared, expected)

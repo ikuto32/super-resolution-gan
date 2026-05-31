@@ -207,3 +207,31 @@ def test_training_step_honors_n_critic(tmp_path):
     assert optimizer_d.step_calls == 3
     assert optimizer_g.step_calls == 1
     assert torch.isfinite(torch.tensor(logs["loss_d"]))
+
+
+def test_training_step_passes_perceptual_loss_when_weight_is_positive(tmp_path, monkeypatch):
+    class RecordingPerceptual(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        def forward(self, sr: torch.Tensor, hr: torch.Tensor) -> torch.Tensor:
+            self.calls += 1
+            return (sr - hr).abs().mean()
+
+    perceptual_module = RecordingPerceptual()
+    monkeypatch.setattr(
+        "src.training.trainer.build_perceptual_loss",
+        lambda loss_config: perceptual_module,
+    )
+    config = _config(tmp_path)
+    config["loss"]["lambda_perceptual"] = 0.5
+
+    trainer = Trainer(
+        TinyGenerator(), TinyDiscriminator(), _loader(), config=config, device="cpu"
+    )
+    logs = trainer.train_step(next(iter(_loader())))
+
+    assert trainer.perceptual_loss is perceptual_module
+    assert perceptual_module.calls == 1
+    assert logs["loss_perceptual"] > 0.0

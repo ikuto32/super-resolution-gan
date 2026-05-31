@@ -66,6 +66,20 @@ loss:
     loss_type: l1
   lambda_consistency: 1.0
   lambda_diffusion: 0.0
+  diffusion:
+    num_timesteps: 1000
+    schedule: linear
+    downscale: 4
+    loss_type: l1
+    timestep_sampling:
+      mode: uniform
+    degradation:
+      mode: bicubic
+      strength_min: 0.0
+      strength_max: 0.35
+    noise:
+      std_min: 0.0
+      std_max: 0.08
   lambda_r1: 10.0
   lambda_r2: 0.0
 

@@ -131,10 +131,13 @@ logging:
     project: super-resolution-gan
 
 training:
+  n_critic: 1  # 1イテレーションごとの Discriminator 更新回数
   sample_every_kimg: 50
   sample_max_images: 4
   sample_dir: samples
 ```
+
+`training.n_critic` を 2 以上にすると、各イテレーションで Discriminator をその回数だけ更新してから Generator を 1 回更新します。
 
 メモリ不足が起きる場合は、まず `data.batch_size`、`data.num_workers`、`model.generator.base_channels`、`model.discriminator.base_channels` を小さくしてください。
 
@@ -186,6 +189,7 @@ data:
 
 training:
   epochs: 1
+  n_critic: 1
   log_every: 1
   validate_every: 10
   save_every: 10

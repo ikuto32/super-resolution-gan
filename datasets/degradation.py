@@ -20,15 +20,22 @@ class DegradationPipeline:
     """Apply configured HR-to-LR degradations.
 
     Supported configuration keys:
-    ``scale`` (required downsample factor), ``mode``, ``blur``, ``noise``,
-    ``jpeg``, and ``clamp``. Blur/noise/jpeg may be booleans, scalars, or
+    ``scale`` (downsample factor), ``target_size``, ``mode``, ``blur``, ``noise``,
+    ``jpeg``, and ``clamp``. ``target_size`` takes precedence over ``scale``.
+    Blur/noise/jpeg may be booleans, scalars, or
     dictionaries with an ``enabled`` flag plus operation-specific settings.
     """
 
     config: Mapping[str, Any] | None = None
+    target_size: int | tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "config", dict(self.config or {}))
+        if self.target_size is None:
+            target_size = self.config.get("target_size")
+        else:
+            target_size = self.target_size
+        object.__setattr__(self, "target_size", _normalize_target_size(target_size))
 
     def __call__(
         self,
@@ -59,12 +66,15 @@ class DegradationPipeline:
         return tensor
 
     def _downsample(self, tensor: torch.Tensor) -> torch.Tensor:
-        scale = float(self.config.get("scale", self.config.get("downsample", 1)))
-        if scale <= 0:
-            raise ValueError(f"scale must be positive, got {scale}")
-        height, width = tensor.shape[-2:]
-        target_h = max(1, int(round(height / scale)))
-        target_w = max(1, int(round(width / scale)))
+        if self.target_size is None:
+            scale = float(self.config.get("scale", self.config.get("downsample", 1)))
+            if scale <= 0:
+                raise ValueError(f"scale must be positive, got {scale}")
+            height, width = tensor.shape[-2:]
+            target_h = max(1, int(round(height / scale)))
+            target_w = max(1, int(round(width / scale)))
+        else:
+            target_h, target_w = self.target_size
         mode = str(self.config.get("mode", "bicubic"))
         align_corners = (
             False if mode in {"linear", "bilinear", "bicubic", "trilinear"} else None
@@ -148,3 +158,22 @@ class DegradationPipeline:
                 raise ValueError(f"range for {key!r} must have 2 values, got {value!r}")
             return rng.uniform(float(value[0]), float(value[1]))
         return float(value)
+
+
+def _normalize_target_size(value: Any) -> tuple[int, int] | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        height = width = value
+    elif isinstance(value, (list, tuple)) and len(value) == 2:
+        height, width = value
+    else:
+        raise ValueError(
+            "target_size must be an int or a 2-item (height, width) sequence, "
+            f"got {value!r}"
+        )
+    height = int(height)
+    width = int(width)
+    if height <= 0 or width <= 0:
+        raise ValueError(f"target_size dimensions must be positive, got {value!r}")
+    return height, width

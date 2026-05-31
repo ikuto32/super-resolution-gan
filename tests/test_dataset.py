@@ -174,3 +174,12 @@ def test_transforms_crop_and_normalize():
     assert tensor.shape == (3, 4, 6)
     assert tensor.min() >= -1.0
     assert tensor.max() <= 1.0
+
+
+def test_degradation_pipeline_target_size_overrides_scale():
+    tensor = torch.zeros((3, 32, 48), dtype=torch.float32)
+    pipeline = DegradationPipeline({"scale": 4, "target_size": [10, 12]})
+
+    degraded = pipeline(tensor)
+
+    assert degraded.shape == (3, 10, 12)

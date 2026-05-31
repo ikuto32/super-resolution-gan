@@ -6,6 +6,7 @@ import argparse
 import inspect
 import random
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -29,14 +30,66 @@ def _constructor_kwargs(cls, values: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in values.items() if key in parameters}
 
 
+def _normalize_image_size(value: Any, key: str) -> tuple[int, int]:
+    if isinstance(value, int):
+        height = width = value
+    elif (
+        isinstance(value, Sequence)
+        and not isinstance(value, (str, bytes))
+        and len(value) == 2
+    ):
+        height, width = value
+    else:
+        raise ValueError(f"{key} must be an int or a 2-item [height, width] sequence")
+
+    height = int(height)
+    width = int(width)
+    if height <= 0 or width <= 0:
+        raise ValueError(f"{key} dimensions must be positive, got {value!r}")
+    return height, width
+
+
+def _expected_downsample_scale(data_cfg: dict[str, Any]) -> float:
+    hr_h, hr_w = _normalize_image_size(data_cfg["image_size_hr"], "data.image_size_hr")
+    lr_h, lr_w = _normalize_image_size(data_cfg["image_size_lr"], "data.image_size_lr")
+    scale_h = hr_h / lr_h
+    scale_w = hr_w / lr_w
+    if not np.isclose(scale_h, scale_w):
+        raise ValueError(
+            "data.image_size_hr and data.image_size_lr must define a uniform "
+            "downsample scale when degradation.downsample.scale is used: "
+            f"height scale={scale_h:g}, width scale={scale_w:g}"
+        )
+    return float(scale_h)
+
+
 def _degradation_config(config: dict[str, Any]) -> dict[str, Any]:
+    data_cfg = config["data"]
+    image_size_lr = _normalize_image_size(
+        data_cfg["image_size_lr"], "data.image_size_lr"
+    )
+
     degradation = dict(config.get("degradation", {}))
     downsample = degradation.pop("downsample", {})
     if isinstance(downsample, dict):
         if "scale" in downsample:
-            degradation["scale"] = downsample["scale"]
+            expected_scale = _expected_downsample_scale(data_cfg)
+            configured_scale = float(downsample["scale"])
+            if configured_scale <= 0:
+                raise ValueError(
+                    "degradation.downsample.scale must be positive, "
+                    f"got {configured_scale:g}"
+                )
+            if not np.isclose(configured_scale, expected_scale):
+                raise ValueError(
+                    "degradation.downsample.scale does not match the scale implied by "
+                    "data.image_size_hr and data.image_size_lr: "
+                    f"configured={configured_scale:g}, expected={expected_scale:g}"
+                )
+            degradation["scale"] = configured_scale
         if "method" in downsample:
             degradation["mode"] = downsample["method"]
+    degradation["target_size"] = image_size_lr
     return degradation
 
 

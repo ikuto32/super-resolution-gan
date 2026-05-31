@@ -59,6 +59,11 @@ loss:
   lambda_pixel: 1.0
   lambda_multiscale: 0.5
   lambda_perceptual: 0.1
+  perceptual:
+    type: vgg
+    layers: [relu1_2, relu2_2, relu3_3, relu4_3]
+    pretrained: false
+    loss_type: l1
   lambda_consistency: 1.0
   lambda_diffusion: 0.0
   lambda_r1: 10.0

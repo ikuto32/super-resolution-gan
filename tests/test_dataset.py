@@ -70,6 +70,7 @@ def test_image_pair_dataset_default_collate_without_lr_root(tmp_path):
     assert batch["hr"].shape == (2, 3, 32, 32)
     assert batch["meta"]["lr_path"] == ["", ""]
 
+
 def test_validation_mode_is_deterministic(tmp_path):
     _write_image(tmp_path / "sample.png", size=(40, 40))
     dataset = ImagePairDataset(
@@ -92,6 +93,46 @@ def test_validation_mode_is_deterministic(tmp_path):
     assert torch.equal(first["lr"], second["lr"])
     for key in first["hr_pyramid"]:
         assert torch.equal(first["hr_pyramid"][key], second["hr_pyramid"][key])
+
+
+def test_training_mode_rng_is_seeded_by_index(tmp_path):
+    _write_image(tmp_path / "sample.png", size=(40, 40))
+    degradation = {
+        "scale": 2,
+        "blur": {"sigma": [0.1, 1.2]},
+        "noise": {"std": [0.001, 0.01]},
+        "jpeg": {"quality": [45, 90]},
+    }
+
+    first_dataset = ImagePairDataset(
+        tmp_path,
+        crop_size=32,
+        degradation=degradation,
+        validation=False,
+        seed=1234,
+    )
+    second_dataset = ImagePairDataset(
+        tmp_path,
+        crop_size=32,
+        degradation=degradation,
+        validation=False,
+        seed=1234,
+    )
+    different_seed_dataset = ImagePairDataset(
+        tmp_path,
+        crop_size=32,
+        degradation=degradation,
+        validation=False,
+        seed=4321,
+    )
+
+    first = first_dataset[0]
+    second = second_dataset[0]
+    different_seed = different_seed_dataset[0]
+
+    assert torch.equal(first["hr"], second["hr"])
+    assert torch.equal(first["lr"], second["lr"])
+    assert not torch.equal(first["lr"], different_seed["lr"])
 
 
 def test_one_by_one_pyramid_uses_spatial_mean():

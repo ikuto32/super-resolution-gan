@@ -9,7 +9,7 @@ from typing import Any
 
 import torch
 from PIL import Image
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, get_worker_info
 
 from datasets.degradation import DegradationPipeline
 from datasets.pyramid import build_image_pyramid
@@ -27,8 +27,10 @@ class ImagePairDataset(Dataset):
     """Load HR images and generate or read aligned LR images.
 
     Items are returned as ``{"lr": ..., "hr": ..., "hr_pyramid": ..., "meta": ...}``.
-    Training mode uses stochastic crops/degradations. Validation mode derives all
-    random state from ``seed`` and the sample index so repeated access is stable.
+    Training mode derives per-sample random state from the DataLoader worker seed
+    and sample index, making stochastic crops/degradations controllable through
+    the DataLoader seed. Validation mode derives all random state from ``seed``
+    and the sample index so repeated access is stable.
     """
 
     def __init__(
@@ -64,7 +66,8 @@ class ImagePairDataset(Dataset):
         with Image.open(hr_path) as image:
             hr_image = image.convert("RGB")
 
-        rng = random.Random(self.seed + index) if self.validation else random.Random()
+        item_seed = self._seed_for_index(index)
+        rng = random.Random(item_seed)
         if self.crop_size is not None:
             crop = center_crop if self.validation else random_crop
             hr_image = (
@@ -79,9 +82,7 @@ class ImagePairDataset(Dataset):
             with Image.open(lr_path) as image:
                 lr = pil_to_tensor(image.convert("RGB"))
         else:
-            torch_generator = None
-            if self.validation:
-                torch_generator = torch.Generator().manual_seed(self.seed + index)
+            torch_generator = torch.Generator().manual_seed(item_seed)
             lr = self.degradation(hr, rng=rng, torch_generator=torch_generator)
 
         hr_pyramid = build_image_pyramid(hr, self.pyramid_scales)
@@ -131,3 +132,28 @@ class ImagePairDataset(Dataset):
         direct = self.lr_root / hr_path.name
         nested = self.lr_root / relative
         return nested if nested.exists() else direct
+
+    def _seed_for_index(self, index: int) -> int:
+        """Return a deterministic per-item seed for Python and PyTorch RNGs."""
+
+        normalized_index = int(index)
+        if self.validation:
+            base_seed = self.seed
+        else:
+            worker_info = get_worker_info()
+            if worker_info is None:
+                base_seed = self.seed
+            else:
+                base_seed = torch.initial_seed() - worker_info.id
+        return _mix_seed(base_seed, normalized_index)
+
+
+def _mix_seed(base_seed: int, index: int) -> int:
+    """Mix a base seed with an item index into a 64-bit seed value."""
+
+    mask = (1 << 64) - 1
+    mixed = (int(base_seed) + 0x9E3779B97F4A7C15) & mask
+    mixed ^= (int(index) + 0xBF58476D1CE4E5B9) & mask
+    mixed = (mixed * 0x94D049BB133111EB) & mask
+    mixed ^= mixed >> 31
+    return mixed

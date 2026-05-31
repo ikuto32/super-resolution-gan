@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import inspect
+import random
 import sys
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
 from torch.utils.data import DataLoader  # noqa: E402
 
 from datasets import ImagePairDataset  # noqa: E402
@@ -37,14 +40,30 @@ def _degradation_config(config: dict[str, Any]) -> dict[str, Any]:
     return degradation
 
 
+def _seed_worker(worker_id: int) -> None:
+    """Seed per-worker Python and NumPy RNGs from PyTorch's worker seed."""
+
+    del worker_id
+    worker_seed = torch.initial_seed() % (2**32)
+    random.seed(worker_seed)
+    np.random.seed(worker_seed)
+
+
+def _data_loader_generator(seed: int) -> torch.Generator:
+    """Create a DataLoader generator seeded from the training config."""
+
+    return torch.Generator().manual_seed(int(seed))
+
+
 def build_dataloaders(config: dict[str, Any]) -> tuple[DataLoader, DataLoader | None]:
     data_cfg = config["data"]
+    seed = int(config.get("seed", 0))
     train_dataset = ImagePairDataset(
         data_cfg["train_dir"],
         crop_size=data_cfg.get("image_size_hr"),
         degradation=_degradation_config(config),
         validation=False,
-        seed=int(config.get("seed", 0)),
+        seed=seed,
     )
     train_loader = DataLoader(
         train_dataset,
@@ -52,6 +71,8 @@ def build_dataloaders(config: dict[str, Any]) -> tuple[DataLoader, DataLoader | 
         shuffle=True,
         num_workers=int(data_cfg.get("num_workers", 0)),
         pin_memory=True,
+        worker_init_fn=_seed_worker,
+        generator=_data_loader_generator(seed),
     )
 
     val_loader = None
@@ -62,7 +83,7 @@ def build_dataloaders(config: dict[str, Any]) -> tuple[DataLoader, DataLoader | 
             crop_size=data_cfg.get("image_size_hr"),
             degradation=_degradation_config(config),
             validation=True,
-            seed=int(config.get("seed", 0)),
+            seed=seed,
         )
         val_loader = DataLoader(
             val_dataset,
@@ -70,6 +91,8 @@ def build_dataloaders(config: dict[str, Any]) -> tuple[DataLoader, DataLoader | 
             shuffle=False,
             num_workers=int(data_cfg.get("num_workers", 0)),
             pin_memory=True,
+            worker_init_fn=_seed_worker,
+            generator=_data_loader_generator(seed),
         )
     return train_loader, val_loader
 

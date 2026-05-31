@@ -15,6 +15,7 @@ from tqdm import tqdm
 
 from src.losses.diffusion import degraded_noisy_state_from_config, denoising_loss
 from src.losses.perceptual import build_perceptual_loss
+from src.losses.reconstruction import reconstruction_loss
 from src.losses.r3gan import discriminator_loss, r1_regularization, r2_regularization
 from src.losses.total import generator_losses
 from src.models.discriminator import ResolutionAgnosticDiscriminator
@@ -154,6 +155,13 @@ class Trainer:
             if isinstance(self.config.get("loss", {}), Mapping)
             else {}
         )
+        self.prediction_target = str(
+            self.loss_config.get("prediction_target", "image")
+        ).lower()
+        if self.prediction_target not in {"image", "residual"}:
+            raise ValueError(
+                "loss.prediction_target must be either 'image' or 'residual'"
+            )
         self.perceptual_loss = None
         if float(self.loss_config.get("lambda_perceptual", 0.0)) > 0.0:
             self.perceptual_loss = build_perceptual_loss(self.loss_config).to(
@@ -205,17 +213,58 @@ class Trainer:
 
     def _generator_forward(
         self, lr: torch.Tensor, hr: torch.Tensor
-    ) -> tuple[torch.Tensor, Mapping[Any, torch.Tensor]]:
+    ) -> dict[str, torch.Tensor | Mapping[Any, torch.Tensor]]:
         output = self.generator(lr, target_size=hr.shape[-2:])
-        sr, pyramid, _ = self._parse_generator_output(output)
-        return sr, pyramid
+        return self._parse_generator_output(output, lr=lr, target_size=hr.shape[-2:])
 
     def _parse_generator_output(
-        self, output: torch.Tensor | Mapping[str, Any]
-    ) -> tuple[torch.Tensor, Mapping[Any, torch.Tensor], Mapping[str, Any]]:
+        self,
+        output: torch.Tensor | Mapping[str, Any],
+        *,
+        lr: torch.Tensor,
+        target_size: tuple[int, int],
+    ) -> dict[str, torch.Tensor | Mapping[Any, torch.Tensor]]:
+        baseline = F.interpolate(
+            lr, size=target_size, mode="bicubic", align_corners=False
+        )
+
         if isinstance(output, Mapping):
-            return output["image"], output.get("pyramid", {}), output
-        return output, {}, {}
+            image = output.get("image")
+            if not isinstance(image, torch.Tensor):
+                raise TypeError(
+                    "generator output mapping must contain tensor key 'image'"
+                )
+
+            output_baseline = output.get("baseline", baseline)
+            if not isinstance(output_baseline, torch.Tensor):
+                raise TypeError("generator output key 'baseline' must be a tensor")
+
+            residual = output.get("residual")
+            if residual is None:
+                residual = image - output_baseline
+            if not isinstance(residual, torch.Tensor):
+                raise TypeError("generator output key 'residual' must be a tensor")
+
+            pyramid = output.get("pyramid", {})
+            if not isinstance(pyramid, Mapping):
+                raise TypeError("generator output key 'pyramid' must be a mapping")
+
+            return {
+                "image": image,
+                "baseline": output_baseline,
+                "residual": residual,
+                "pyramid": pyramid,
+            }
+
+        if not isinstance(output, torch.Tensor):
+            raise TypeError("generator output must be a tensor or mapping")
+
+        return {
+            "image": output,
+            "baseline": baseline,
+            "residual": output - baseline,
+            "pyramid": {},
+        }
 
     def _generator_supports_kwargs(self, *names: str) -> bool:
         signature = inspect.signature(self.generator.forward)
@@ -263,7 +312,8 @@ class Trainer:
         for _ in range(self.n_critic):
             self.optimizer_d.zero_grad(set_to_none=True)
             with torch.no_grad():
-                fake_detached, _ = self._generator_forward(lr, hr)
+                generated_detached = self._generator_forward(lr, hr)
+                fake_detached = generated_detached["image"]
             real_for_d = hr.detach().requires_grad_(
                 float(self.loss_config.get("lambda_r1", 0.0)) > 0.0
             )
@@ -306,10 +356,39 @@ class Trainer:
 
         self.optimizer_g.zero_grad(set_to_none=True)
         with self._autocast():
-            generator_output = self.generator(lr, target_size=hr.shape[-2:])
-            fake, generated_pyramid, generator_output_mapping = (
-                self._parse_generator_output(generator_output)
+            generated = self._generator_forward(lr, hr)
+            generator_output_mapping = generated
+
+            fake = generated["image"]
+            baseline = generated["baseline"]
+            pred_residual = generated["residual"]
+            generated_pyramid = generated["pyramid"]
+
+            if not isinstance(fake, torch.Tensor):
+                raise TypeError("normalized generator image must be a tensor")
+            if not isinstance(baseline, torch.Tensor):
+                raise TypeError("normalized generator baseline must be a tensor")
+            if not isinstance(pred_residual, torch.Tensor):
+                raise TypeError("normalized generator residual must be a tensor")
+            if not isinstance(generated_pyramid, Mapping):
+                raise TypeError("normalized generator pyramid must be a mapping")
+
+            target_residual = hr - baseline
+            pixel_loss_type = str(self.loss_config.get("pixel_loss_type", "l1"))
+
+            loss_pixel_image = reconstruction_loss(
+                fake, hr, loss_type=pixel_loss_type
             )
+            loss_residual = reconstruction_loss(
+                pred_residual, target_residual, loss_type=pixel_loss_type
+            )
+
+            pixel_prediction = fake
+            pixel_target = hr
+            if self.prediction_target == "residual":
+                pixel_prediction = pred_residual
+                pixel_target = target_residual
+
             fake_scores_g = self._discriminate(fake, lr)
             perceptual_loss = (
                 self.perceptual_loss(fake, hr)
@@ -333,17 +412,32 @@ class Trainer:
                     hr,
                     loss_type=str(diffusion_cfg.get("loss_type", "l1")),
                 )
+
             g_losses = generator_losses(
                 fake_scores=fake_scores_g,
                 sr=fake,
                 hr=hr,
+                reconstruction_prediction=pixel_prediction,
+                reconstruction_target=pixel_target,
                 lr=lr,
                 generated_pyramid=generated_pyramid,
                 hr_pyramid=hr_pyramid,
                 perceptual_loss=perceptual_loss,
                 diffusion_loss=diffusion_loss,
                 weights=self.loss_config,
+                pixel_loss_type=pixel_loss_type,
             )
+
+            lambda_pixel = float(
+                self.loss_config.get(
+                    "lambda_pixel",
+                    self.loss_config.get(
+                        "lambda_pix", self.loss_config.get("pixel", 1.0)
+                    ),
+                )
+            )
+            g_losses["loss_pixel_image"] = loss_pixel_image * lambda_pixel
+            g_losses["loss_residual"] = loss_residual * lambda_pixel
             loss_g = g_losses["loss_total"]
         if self.scaler is not None:
             self.scaler.scale(loss_g).backward()

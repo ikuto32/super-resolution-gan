@@ -128,12 +128,15 @@ class ProgressiveSRGenerator(nn.Module):
 
         # The network predicts residuals over the bicubic baseline.
         if noisy_condition is None:
-            residual = lr.mean(dim=(-2, -1), keepdim=True)
+            residual = torch.zeros_like(lr.mean(dim=(-2, -1), keepdim=True))
             if noise is not None:
                 residual = residual + noise.mean(dim=(-2, -1), keepdim=True)
         else:
             noisy_image = noisy_condition
-            if noisy_image.shape[-2] > target_hw[0] or noisy_image.shape[-1] > target_hw[1]:
+            if (
+                noisy_image.shape[-2] > target_hw[0]
+                or noisy_image.shape[-1] > target_hw[1]
+            ):
                 noisy_image = F.interpolate(
                     noisy_image, size=target_hw, mode="bilinear", align_corners=False
                 )
@@ -195,8 +198,12 @@ class ProgressiveSRGenerator(nn.Module):
                 )
             pyramid[scale] = scale_baseline + scale_residual
 
-        output: dict[str, torch.Tensor | dict[int, torch.Tensor] | list[torch.Tensor]] = {
+        output: dict[
+            str, torch.Tensor | dict[int, torch.Tensor] | list[torch.Tensor]
+        ] = {
             "image": image,
+            "baseline": baseline,
+            "residual": residual,
             "pyramid": pyramid,
             "features": intermediate_features
             if should_return_intermediates

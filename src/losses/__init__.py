@@ -1,6 +1,7 @@
 """Loss functions for super-resolution training."""
 
 from src.losses.consistency import lr_consistency_loss
+from src.losses.perceptual import VGGPerceptualLoss, build_perceptual_loss
 from src.losses.r3gan import (
     discriminator_loss,
     generator_loss,
@@ -25,6 +26,8 @@ __all__ = [
     "LOSS_KEYS",
     "MultiScaleReconstructionLoss",
     "ReconstructionLoss",
+    "VGGPerceptualLoss",
+    "build_perceptual_loss",
     "compute_generator_loss",
     "discriminator_loss",
     "generator_loss",

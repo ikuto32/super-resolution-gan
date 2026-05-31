@@ -74,6 +74,28 @@ def test_image_pair_dataset_default_collate_without_lr_root(tmp_path):
     assert batch["meta"]["lr_path"] == ["", ""]
 
 
+def test_image_pair_dataset_maps_nested_lr_path_from_hr_root(tmp_path):
+    hr_path = tmp_path / "hr" / "class_a" / "img.png"
+    lr_path = tmp_path / "lr" / "class_a" / "img.png"
+    hr_path.parent.mkdir(parents=True)
+    lr_path.parent.mkdir(parents=True)
+    _write_image(hr_path, size=(32, 32))
+    _write_image(lr_path, size=(16, 16))
+    dataset = ImagePairDataset(
+        tmp_path / "hr",
+        lr_root=tmp_path / "lr",
+        crop_size=None,
+        validation=True,
+        normalize=False,
+    )
+
+    item = dataset[0]
+
+    assert item["meta"]["lr_path"] == str(lr_path)
+    assert item["hr"].shape == (3, 32, 32)
+    assert item["lr"].shape == (3, 16, 16)
+
+
 def test_degradation_noise_supports_min_max_keys():
     tensor = torch.full((3, 16, 16), 0.5)
     pipeline = DegradationPipeline(
@@ -174,3 +196,12 @@ def test_transforms_crop_and_normalize():
     assert tensor.shape == (3, 4, 6)
     assert tensor.min() >= -1.0
     assert tensor.max() <= 1.0
+
+
+def test_degradation_pipeline_target_size_overrides_scale():
+    tensor = torch.zeros((3, 32, 48), dtype=torch.float32)
+    pipeline = DegradationPipeline({"scale": 4, "target_size": [10, 12]})
+
+    degraded = pipeline(tensor)
+
+    assert degraded.shape == (3, 10, 12)

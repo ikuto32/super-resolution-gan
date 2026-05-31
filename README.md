@@ -7,7 +7,7 @@ PyTorch で実装した、解像度非依存の超解像 GAN 研究用コード�
 - HR 画像から LR/HR ペアを動的に生成するデータセット
 - 1x1 から目標解像度まで段階的にアップサンプリングする生成器
 - 条件付き・解像度非依存の識別器
-- R3GAN 形式の敵対的損失、再構成損失、マルチスケール損失、LR 一貫性損失
+- R3GAN 形式の敵対的損失、再構成損失、マルチスケール損失、VGG perceptual loss、LR 一貫性損失
 - EMA、チェックポイント保存、検証サンプル出力、JSONL/TensorBoard ロギング
 - `uv` による環境管理
 
@@ -233,6 +233,7 @@ uv run ruff format .
 ## 出力とログ
 
 - スカラー値は `runs/.../logs/metrics.jsonl` に JSONL 形式で保存されます。
+- 検証ログの `mse` / `psnr` は、学習テンソルが `[-1, 1]` レンジである前提で `(tensor + 1) / 2` により `[0, 1]` へ戻してから計算します。`psnr` は `[0, 1]` data range の値です。
 - `torch.utils.tensorboard` が利用可能な環境では TensorBoard ログも同じログディレクトリに保存されます。
 - `logging.wandb.enabled: true` にすると、スカラーとサンプル画像を Weights & Biases にも送信します。`project`、`entity`、`name`、`mode`、`tags` などは `logging.wandb` 配下で指定できます。
 - `training.sample_every_kimg` が 0 より大きい場合、学習中に指定 kimg（1000 images）ごとに LR upsample / SR / HR を並べたサンプル画像が `runs/.../samples/` に保存され、TensorBoard / W&B にも記録されます。

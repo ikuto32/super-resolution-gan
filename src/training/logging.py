@@ -10,6 +10,8 @@ from typing import Any
 import torch
 import wandb
 
+from datasets.transforms import tensor_to_pil
+
 try:
     from torch.utils.tensorboard import SummaryWriter
 except ImportError:  # pragma: no cover - depends on optional tensorboard package.
@@ -106,12 +108,21 @@ class TrainingLogger:
             else:
                 self.writer.add_images(tag, detached, step)
         if self._wandb_run is not None:
-            wandb_images = (
-                [wandb.Image(detached)]
-                if detached.ndim == 3
-                else [wandb.Image(image) for image in detached]
-            )
+            wandb_images = [
+                wandb.Image(tensor_to_pil(image))
+                for image in self._iter_images(detached)
+            ]
             wandb.log({tag: wandb_images}, step=int(step))
+
+    @staticmethod
+    def _iter_images(images: torch.Tensor) -> list[torch.Tensor]:
+        if images.ndim == 3:
+            return [images]
+        if images.ndim == 4:
+            return [image for image in images]
+        raise ValueError(
+            f"expected a CHW or BCHW tensor, got shape {tuple(images.shape)}"
+        )
 
     def close(self) -> None:
         if self.writer is not None:

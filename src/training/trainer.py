@@ -14,6 +14,7 @@ from torch import nn
 from torch.nn.utils import clip_grad_norm_
 from tqdm import tqdm
 
+from src.losses.diffusion import degraded_noisy_state_from_config, denoising_loss
 from src.losses.perceptual import build_perceptual_loss
 from src.losses.r3gan import discriminator_loss, r1_regularization, r2_regularization
 from src.losses.total import generator_losses
@@ -208,6 +209,39 @@ class Trainer:
             return output["image"], output.get("pyramid", {})
         return output, {}
 
+    def _generator_supports_kwargs(self, *names: str) -> bool:
+        signature = inspect.signature(self.generator.forward)
+        if any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        ):
+            return True
+        return all(name in signature.parameters for name in names)
+
+    def _diffusion_generator_forward(
+        self,
+        lr: torch.Tensor,
+        hr: torch.Tensor,
+        x_t: torch.Tensor,
+        timesteps: torch.Tensor,
+    ) -> torch.Tensor:
+        kwargs: dict[str, Any] = {}
+        if self._generator_supports_kwargs("noisy_condition"):
+            kwargs["noisy_condition"] = x_t
+        else:
+            lr = x_t
+        if self._generator_supports_kwargs("diffusion_timestep"):
+            kwargs["diffusion_timestep"] = timesteps
+        if self._generator_supports_kwargs("return_diffusion"):
+            kwargs["return_diffusion"] = True
+        output = self.generator(lr, target_size=hr.shape[-2:], **kwargs)
+        if isinstance(output, Mapping):
+            diffusion = output.get("diffusion")
+            if isinstance(diffusion, torch.Tensor):
+                return diffusion
+            return output["image"]
+        return output
+
     def train_step(self, batch: Mapping[str, Any]) -> dict[str, float]:
         """Run ``n_critic`` discriminator updates and one generator update."""
         self.generator.train()
@@ -271,6 +305,23 @@ class Trainer:
                 if self.perceptual_loss is not None
                 else None
             )
+            diffusion_loss = None
+            if float(self.loss_config.get("lambda_diffusion", 0.0)) > 0.0:
+                diffusion_state = degraded_noisy_state_from_config(hr, self.loss_config)
+                diffusion_prediction = self._diffusion_generator_forward(
+                    lr,
+                    hr,
+                    diffusion_state["x_t"],
+                    diffusion_state["timesteps"],
+                )
+                diffusion_cfg = self.loss_config.get("diffusion", {})
+                if not isinstance(diffusion_cfg, Mapping):
+                    diffusion_cfg = {}
+                diffusion_loss = denoising_loss(
+                    diffusion_prediction,
+                    hr,
+                    loss_type=str(diffusion_cfg.get("loss_type", "l1")),
+                )
             g_losses = generator_losses(
                 fake_scores=fake_scores_g,
                 sr=fake,
@@ -279,6 +330,7 @@ class Trainer:
                 generated_pyramid=generated_pyramid,
                 hr_pyramid=hr_pyramid,
                 perceptual_loss=perceptual_loss,
+                diffusion_loss=diffusion_loss,
                 weights=self.loss_config,
             )
             loss_g = g_losses["loss_total"]

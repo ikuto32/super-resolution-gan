@@ -62,12 +62,20 @@ class ProgressiveSRGenerator(nn.Module):
         return (int(target_size[0]), int(target_size[1]))
 
     @staticmethod
-    def _progressive_sizes(target_size: tuple[int, int]) -> list[tuple[int, int]]:
+    def _progressive_sizes(
+        target_size: tuple[int, int],
+        start_size: tuple[int, int] = (1, 1),
+    ) -> list[tuple[int, int]]:
         target_h, target_w = target_size
         if target_h < 1 or target_w < 1:
             raise ValueError(f"target spatial size must be positive, got {target_size}")
+        start_h, start_w = start_size
+        if start_h < 1 or start_w < 1:
+            raise ValueError(f"start spatial size must be positive, got {start_size}")
         sizes: list[tuple[int, int]] = []
-        height = width = 1
+        height, width = min(target_h, start_h), min(target_w, start_w)
+        if (height, width) != start_size:
+            sizes.append((height, width))
         while (height, width) != (target_h, target_w):
             height = min(target_h, height * 2)
             width = min(target_w, width * 2)
@@ -91,6 +99,9 @@ class ProgressiveSRGenerator(nn.Module):
         target_size: int | tuple[int, int] | list[int],
         noise: torch.Tensor | None = None,
         return_intermediates: bool | None = None,
+        diffusion_timestep: torch.Tensor | None = None,
+        noisy_condition: torch.Tensor | None = None,
+        return_diffusion: bool = False,
     ) -> dict[str, torch.Tensor | dict[int, torch.Tensor] | list[torch.Tensor]]:
         if lr.ndim != 4:
             raise ValueError(f"expected lr to be BCHW, got shape {tuple(lr.shape)}")
@@ -101,39 +112,72 @@ class ProgressiveSRGenerator(nn.Module):
             else return_intermediates
         )
 
-        pyramid_sizes = self._pyramid_output_sizes(lr, target_hw)
-        condition_features = self.condition_encoder(lr, pyramid_sizes)
-        seed = lr.mean(dim=(-2, -1), keepdim=True)
-        if noise is not None:
-            seed = seed + noise.mean(dim=(-2, -1), keepdim=True)
+        condition_source = noisy_condition if noisy_condition is not None else lr
+        if condition_source.ndim != 4:
+            raise ValueError(
+                f"expected condition source to be BCHW, got shape {tuple(condition_source.shape)}"
+            )
+
+        pyramid_sizes = self._pyramid_output_sizes(condition_source, target_hw)
+        condition_features = self.condition_encoder(condition_source, pyramid_sizes)
+
+        # Final SR baseline is always bicubic LR.
         baseline = F.interpolate(
             lr, size=target_hw, mode="bicubic", align_corners=False
         )
-        residual = torch.zeros_like(seed)
-        features = self.input_proj(seed)
-        residual_pyramid: dict[int, torch.Tensor] = (
-            {1: residual} if pyramid_sizes.get(1) == (1, 1) else {}
-        )
+
+        # The network predicts residuals over the bicubic baseline.
+        if noisy_condition is None:
+            residual = lr.mean(dim=(-2, -1), keepdim=True)
+            if noise is not None:
+                residual = residual + noise.mean(dim=(-2, -1), keepdim=True)
+        else:
+            noisy_image = noisy_condition
+            if noisy_image.shape[-2] > target_hw[0] or noisy_image.shape[-1] > target_hw[1]:
+                noisy_image = F.interpolate(
+                    noisy_image, size=target_hw, mode="bilinear", align_corners=False
+                )
+
+            noisy_baseline = F.interpolate(
+                lr,
+                size=noisy_image.shape[-2:],
+                mode="bicubic",
+                align_corners=False,
+            )
+            residual = noisy_image - noisy_baseline
+
+        features = self.input_proj(residual)
+
+        residual_pyramid: dict[int, torch.Tensor] = {
+            scale: residual
+            for scale, size in pyramid_sizes.items()
+            if size == residual.shape[-2:]
+        }
         pyramid: dict[int, torch.Tensor] = {}
         intermediate_features: list[torch.Tensor] = []
 
-        for size in self._progressive_sizes(target_hw):
+        start_size = residual.shape[-2:]
+        for size in self._progressive_sizes(target_hw, start_size=start_size):
             condition = None
-            for scale, scale_size in condition_features.items():
-                if scale_size.shape[-2:] == size:
-                    condition = scale_size
+            for scale_feature in condition_features.values():
+                if scale_feature.shape[-2:] == size:
+                    condition = scale_feature
                     break
+
             if condition is None:
                 condition = (
                     next(iter(condition_features.values()))
                     if condition_features
                     else None
                 )
+
             residual, features = self.block(
                 residual, features, condition=condition, size=size
             )
+
             if should_return_intermediates:
                 intermediate_features.append(features)
+
             for scale, pyramid_size in pyramid_sizes.items():
                 if size == pyramid_size:
                     residual_pyramid[scale] = residual
@@ -151,10 +195,15 @@ class ProgressiveSRGenerator(nn.Module):
                 )
             pyramid[scale] = scale_baseline + scale_residual
 
-        return {
+        output: dict[str, torch.Tensor | dict[int, torch.Tensor] | list[torch.Tensor]] = {
             "image": image,
             "pyramid": pyramid,
             "features": intermediate_features
             if should_return_intermediates
             else features,
         }
+        if return_diffusion:
+            output["diffusion"] = image
+            if diffusion_timestep is not None:
+                output["diffusion_timestep"] = diffusion_timestep
+        return output

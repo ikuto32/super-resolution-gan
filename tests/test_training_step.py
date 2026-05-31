@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
@@ -28,6 +29,18 @@ class CountingSGD(torch.optim.SGD):
     def step(self, closure=None):
         self.step_calls += 1
         return super().step(closure)
+
+
+class TypeErrorDiscriminator(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.bias = nn.Parameter(torch.zeros(()))
+
+    def forward(
+        self, image: torch.Tensor, condition: torch.Tensor
+    ) -> dict[str, torch.Tensor]:
+        _ = condition
+        raise TypeError("internal discriminator failure")
 
 
 class TinyDiscriminator(nn.Module):
@@ -207,3 +220,16 @@ def test_training_step_honors_n_critic(tmp_path):
     assert optimizer_d.step_calls == 3
     assert optimizer_g.step_calls == 1
     assert torch.isfinite(torch.tensor(logs["loss_d"]))
+
+
+def test_discriminator_internal_type_error_is_not_swallowed(tmp_path):
+    trainer = Trainer(
+        TinyGenerator(),
+        TypeErrorDiscriminator(),
+        _loader(),
+        config=_config(tmp_path),
+        device="cpu",
+    )
+
+    with pytest.raises(TypeError, match="internal discriminator failure"):
+        trainer.train_step(next(iter(_loader())))

@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 from torch.nn.utils import clip_grad_norm_
 from tqdm import tqdm
@@ -24,6 +23,7 @@ from src.training.checkpointing import load_checkpoint, save_checkpoint
 from src.training.ema import EMAGenerator
 from src.training.logging import TrainingLogger
 from src.training.optimizers import build_optimizers
+from src.training.validation import _make_sample_grid as build_sample_grid
 from src.training.validation import run_validation
 from datasets.transforms import tensor_to_pil
 
@@ -127,9 +127,11 @@ class Trainer:
         self.logger = logger or TrainingLogger(
             output_dir / "logs",
             enable_tensorboard=bool(logging_cfg.get("tensorboard", True)),
-            wandb_config=logging_cfg.get("wandb", {})
-            if isinstance(logging_cfg.get("wandb", {}), Mapping)
-            else {},
+            wandb_config=(
+                logging_cfg.get("wandb", {})
+                if isinstance(logging_cfg.get("wandb", {}), Mapping)
+                else {}
+            ),
             run_config=self.config,
         )
         self.mixed_precision = (
@@ -213,34 +215,50 @@ class Trainer:
         self, lr: torch.Tensor, hr: torch.Tensor
     ) -> dict[str, torch.Tensor | Mapping[Any, torch.Tensor]]:
         output = self.generator(lr, target_size=hr.shape[-2:])
+        return self._parse_generator_output(output, lr=lr, target_size=hr.shape[-2:])
+
+    def _parse_generator_output(
+        self,
+        output: torch.Tensor | Mapping[str, Any],
+        *,
+        lr: torch.Tensor,
+        target_size: tuple[int, int],
+    ) -> dict[str, torch.Tensor | Mapping[Any, torch.Tensor]]:
         baseline = F.interpolate(
-            lr, size=hr.shape[-2:], mode="bicubic", align_corners=False
+            lr, size=target_size, mode="bicubic", align_corners=False
         )
+
         if isinstance(output, Mapping):
             image = output.get("image")
             if not isinstance(image, torch.Tensor):
                 raise TypeError(
                     "generator output mapping must contain tensor key 'image'"
                 )
+
             output_baseline = output.get("baseline", baseline)
             if not isinstance(output_baseline, torch.Tensor):
                 raise TypeError("generator output key 'baseline' must be a tensor")
+
             residual = output.get("residual")
             if residual is None:
                 residual = image - output_baseline
             if not isinstance(residual, torch.Tensor):
                 raise TypeError("generator output key 'residual' must be a tensor")
+
             pyramid = output.get("pyramid", {})
             if not isinstance(pyramid, Mapping):
                 raise TypeError("generator output key 'pyramid' must be a mapping")
+
             return {
                 "image": image,
                 "baseline": output_baseline,
                 "residual": residual,
                 "pyramid": pyramid,
             }
+
         if not isinstance(output, torch.Tensor):
             raise TypeError("generator output must be a tensor or mapping")
+
         return {
             "image": output,
             "baseline": baseline,
@@ -339,10 +357,13 @@ class Trainer:
         self.optimizer_g.zero_grad(set_to_none=True)
         with self._autocast():
             generated = self._generator_forward(lr, hr)
+            generator_output_mapping = generated
+
             fake = generated["image"]
             baseline = generated["baseline"]
             pred_residual = generated["residual"]
             generated_pyramid = generated["pyramid"]
+
             if not isinstance(fake, torch.Tensor):
                 raise TypeError("normalized generator image must be a tensor")
             if not isinstance(baseline, torch.Tensor):
@@ -351,17 +372,23 @@ class Trainer:
                 raise TypeError("normalized generator residual must be a tensor")
             if not isinstance(generated_pyramid, Mapping):
                 raise TypeError("normalized generator pyramid must be a mapping")
+
             target_residual = hr - baseline
             pixel_loss_type = str(self.loss_config.get("pixel_loss_type", "l1"))
-            loss_pixel_image = reconstruction_loss(fake, hr, loss_type=pixel_loss_type)
+
+            loss_pixel_image = reconstruction_loss(
+                fake, hr, loss_type=pixel_loss_type
+            )
             loss_residual = reconstruction_loss(
                 pred_residual, target_residual, loss_type=pixel_loss_type
             )
+
             pixel_prediction = fake
             pixel_target = hr
             if self.prediction_target == "residual":
                 pixel_prediction = pred_residual
                 pixel_target = target_residual
+
             fake_scores_g = self._discriminate(fake, lr)
             perceptual_loss = (
                 self.perceptual_loss(fake, hr)
@@ -385,6 +412,7 @@ class Trainer:
                     hr,
                     loss_type=str(diffusion_cfg.get("loss_type", "l1")),
                 )
+
             g_losses = generator_losses(
                 fake_scores=fake_scores_g,
                 sr=fake,
@@ -399,6 +427,7 @@ class Trainer:
                 weights=self.loss_config,
                 pixel_loss_type=pixel_loss_type,
             )
+
             lambda_pixel = float(
                 self.loss_config.get(
                     "lambda_pixel",
@@ -436,7 +465,7 @@ class Trainer:
         if self.log_every > 0 and self.step % self.log_every == 0:
             self.logger.log_scalars(logs, self.step, prefix="train")
         if self._should_write_sample():
-            self._write_sample(lr, fake, hr)
+            self._write_sample(lr, fake, hr, generator_output_mapping)
         if (
             self.validate_every > 0
             and self.val_loader is not None
@@ -460,24 +489,47 @@ class Trainer:
         return True
 
     def _make_sample_grid(
-        self, lr: torch.Tensor, sr: torch.Tensor, hr: torch.Tensor
+        self,
+        lr: torch.Tensor,
+        sr: torch.Tensor,
+        hr: torch.Tensor,
+        output: Mapping[str, Any] | None = None,
     ) -> torch.Tensor:
-        max_images = max(1, min(self.sample_max_images, int(hr.shape[0])))
-        lr_up = F.interpolate(
-            lr[:max_images], size=hr.shape[-2:], mode="bilinear", align_corners=False
+        baseline = pred_residual = target_residual = error_map = None
+        if output is not None and "baseline" in output and "residual" in output:
+            baseline = output["baseline"]
+            pred_residual = output["residual"]
+            target_residual = hr - baseline
+            error_map = (sr - hr).abs()
+        return build_sample_grid(
+            lr,
+            sr,
+            hr,
+            baseline=baseline,
+            pred_residual=pred_residual,
+            target_residual=target_residual,
+            error_map=error_map,
+            max_images=self.sample_max_images,
         )
-        rows = [
-            torch.cat(
-                [lr_up[index], sr[:max_images][index], hr[:max_images][index]], dim=-1
-            )
-            for index in range(max_images)
-        ]
-        return torch.cat(rows, dim=-2)
 
     def _write_sample(
-        self, lr: torch.Tensor, sr: torch.Tensor, hr: torch.Tensor
+        self,
+        lr: torch.Tensor,
+        sr: torch.Tensor,
+        hr: torch.Tensor,
+        output: Mapping[str, Any] | None = None,
     ) -> None:
-        grid = self._make_sample_grid(lr.detach(), sr.detach(), hr.detach())
+        detached_output = (
+            {
+                key: value.detach() if isinstance(value, torch.Tensor) else value
+                for key, value in output.items()
+            }
+            if output is not None
+            else None
+        )
+        grid = self._make_sample_grid(
+            lr.detach(), sr.detach(), hr.detach(), detached_output
+        )
         sample_path = (
             self.sample_dir
             / f"step_{self.step:08d}_kimg_{self.seen_images / 1000.0:.3f}.png"

@@ -131,7 +131,14 @@ class DegradationPipeline:
     @staticmethod
     def _sample_value(spec: Any, key: str, rng: random.Random, default: float) -> float:
         if isinstance(spec, Mapping):
-            value = spec.get(key, default)
+            if key in spec:
+                value = spec[key]
+            elif f"{key}_min" in spec and f"{key}_max" in spec:
+                return rng.uniform(
+                    float(spec[f"{key}_min"]), float(spec[f"{key}_max"])
+                )
+            else:
+                value = default
         elif isinstance(spec, (int, float)):
             value = spec
         else:

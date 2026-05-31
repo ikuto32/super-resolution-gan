@@ -264,7 +264,9 @@ def test_discriminator_internal_type_error_is_not_swallowed(tmp_path):
         trainer.train_step(next(iter(_loader())))
 
 
-def test_training_step_passes_perceptual_loss_when_weight_is_positive(tmp_path, monkeypatch):
+def test_training_step_passes_perceptual_loss_when_weight_is_positive(
+    tmp_path, monkeypatch
+):
     class RecordingPerceptual(nn.Module):
         def __init__(self) -> None:
             super().__init__()
@@ -291,3 +293,25 @@ def test_training_step_passes_perceptual_loss_when_weight_is_positive(tmp_path, 
     assert perceptual_module.calls == 1
     assert logs["loss_perceptual"] > 0.0
 
+
+def test_trainer_sample_grid_uses_residual_panels_when_available(tmp_path):
+    trainer = Trainer(
+        TinyGenerator(),
+        TinyDiscriminator(),
+        _loader(),
+        config=_config(tmp_path),
+        device="cpu",
+    )
+    lr = torch.zeros(1, 3, 4, 4)
+    hr = torch.ones(1, 3, 8, 8)
+    baseline = torch.zeros_like(hr)
+    residual = torch.full_like(hr, 2.0)
+    sr = baseline + residual
+
+    residual_grid = trainer._make_sample_grid(
+        lr, sr, hr, {"baseline": baseline, "residual": residual}
+    )
+    fallback_grid = trainer._make_sample_grid(lr, sr, hr, {})
+
+    assert residual_grid.shape == (3, 8, 7 * 8)
+    assert fallback_grid.shape == (3, 8, 3 * 8)

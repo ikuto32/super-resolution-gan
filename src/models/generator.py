@@ -13,7 +13,7 @@ from src.models.progressive_blocks import ProgressiveUpsampleBlock
 
 
 class ProgressiveSRGenerator(nn.Module):
-    """Generate SR images by expanding the LR spatial mean to target size."""
+    """Generate SR images as bicubic LR baselines plus learned residuals."""
 
     def __init__(
         self,
@@ -117,51 +117,83 @@ class ProgressiveSRGenerator(nn.Module):
             raise ValueError(
                 f"expected condition source to be BCHW, got shape {tuple(condition_source.shape)}"
             )
+
         pyramid_sizes = self._pyramid_output_sizes(condition_source, target_hw)
         condition_features = self.condition_encoder(condition_source, pyramid_sizes)
-        if noisy_condition is None:
-            image = lr.mean(dim=(-2, -1), keepdim=True)
-            if noise is not None:
-                image = image + noise.mean(dim=(-2, -1), keepdim=True)
-        else:
-            image = noisy_condition
-            if image.shape[-2] > target_hw[0] or image.shape[-1] > target_hw[1]:
-                image = F.interpolate(
-                    image, size=target_hw, mode="bilinear", align_corners=False
-                )
-        features = self.input_proj(image)
-        pyramid: dict[int, torch.Tensor] = (
-            {1: image} if pyramid_sizes.get(1) == (1, 1) else {}
+
+        # Final SR baseline is always bicubic LR.
+        baseline = F.interpolate(
+            lr, size=target_hw, mode="bicubic", align_corners=False
         )
+
+        # The network predicts residuals over the bicubic baseline.
+        if noisy_condition is None:
+            residual = lr.mean(dim=(-2, -1), keepdim=True)
+            if noise is not None:
+                residual = residual + noise.mean(dim=(-2, -1), keepdim=True)
+        else:
+            noisy_image = noisy_condition
+            if noisy_image.shape[-2] > target_hw[0] or noisy_image.shape[-1] > target_hw[1]:
+                noisy_image = F.interpolate(
+                    noisy_image, size=target_hw, mode="bilinear", align_corners=False
+                )
+
+            noisy_baseline = F.interpolate(
+                lr,
+                size=noisy_image.shape[-2:],
+                mode="bicubic",
+                align_corners=False,
+            )
+            residual = noisy_image - noisy_baseline
+
+        features = self.input_proj(residual)
+
+        residual_pyramid: dict[int, torch.Tensor] = {
+            scale: residual
+            for scale, size in pyramid_sizes.items()
+            if size == residual.shape[-2:]
+        }
+        pyramid: dict[int, torch.Tensor] = {}
         intermediate_features: list[torch.Tensor] = []
 
-        start_size = image.shape[-2:]
+        start_size = residual.shape[-2:]
         for size in self._progressive_sizes(target_hw, start_size=start_size):
             condition = None
-            for scale, scale_size in condition_features.items():
-                if scale_size.shape[-2:] == size:
-                    condition = scale_size
+            for scale_feature in condition_features.values():
+                if scale_feature.shape[-2:] == size:
+                    condition = scale_feature
                     break
+
             if condition is None:
                 condition = (
                     next(iter(condition_features.values()))
                     if condition_features
                     else None
                 )
-            image, features = self.block(
-                image, features, condition=condition, size=size
+
+            residual, features = self.block(
+                residual, features, condition=condition, size=size
             )
+
             if should_return_intermediates:
                 intermediate_features.append(features)
+
             for scale, pyramid_size in pyramid_sizes.items():
                 if size == pyramid_size:
-                    pyramid[scale] = image
+                    residual_pyramid[scale] = residual
+
+        image = baseline + residual
 
         for scale, size in pyramid_sizes.items():
-            pyramid.setdefault(
-                scale,
-                F.interpolate(image, size=size, mode="bilinear", align_corners=False),
+            scale_baseline = F.interpolate(
+                lr, size=size, mode="bicubic", align_corners=False
             )
+            scale_residual = residual_pyramid.get(scale)
+            if scale_residual is None:
+                scale_residual = F.interpolate(
+                    residual, size=size, mode="bilinear", align_corners=False
+                )
+            pyramid[scale] = scale_baseline + scale_residual
 
         output: dict[str, torch.Tensor | dict[int, torch.Tensor] | list[torch.Tensor]] = {
             "image": image,

@@ -60,7 +60,7 @@ class ConditionInjection(nn.Module):
 
 
 class ProgressiveUpsampleBlock(nn.Module):
-    """Upsample image/features, inject condition, refine, and add RGB residual."""
+    """Upsample residual/features, inject condition, refine, and predict RGB residual."""
 
     def __init__(
         self,
@@ -85,19 +85,21 @@ class ProgressiveUpsampleBlock(nn.Module):
 
     def forward(
         self,
-        image: torch.Tensor,
+        residual: torch.Tensor,
         features: torch.Tensor,
         condition: torch.Tensor | None = None,
         size: tuple[int, int] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return the progressive RGB residual and updated feature map."""
         if size is None:
             size = (features.shape[-2] * 2, features.shape[-1] * 2)
-        upsampled_image = F.interpolate(
-            image, size=size, mode="bilinear", align_corners=False
+        upsampled_residual = F.interpolate(
+            residual, size=size, mode="bilinear", align_corners=False
         )
         x = F.interpolate(features, size=size, mode="bilinear", align_corners=False)
         x = self.activation(self.conv(x))
         x = self.condition(x, condition)
         x = self.residual_blocks(x)
-        image = upsampled_image + self.to_rgb(x)
-        return image, x
+        residual_delta = self.to_rgb(x)
+        residual = upsampled_residual + residual_delta
+        return residual, x

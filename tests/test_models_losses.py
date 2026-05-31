@@ -24,7 +24,7 @@ def test_condition_encoder_returns_requested_scales_and_sizes():
     assert features[4].shape == (2, 16, 32, 32)
 
 
-def test_progressive_upsample_block_adds_rgb_residual_at_requested_size():
+def test_progressive_upsample_block_returns_rgb_residual_at_requested_size():
     block = ProgressiveUpsampleBlock(
         channels=8,
         image_channels=3,
@@ -33,14 +33,14 @@ def test_progressive_upsample_block_adds_rgb_residual_at_requested_size():
         num_res_blocks=1,
     )
 
-    image, features = block(
-        image=torch.randn(2, 3, 4, 4),
+    residual, features = block(
+        residual=torch.randn(2, 3, 4, 4),
         features=torch.randn(2, 8, 4, 4),
         condition=torch.randn(2, 16, 8, 8),
         size=(8, 8),
     )
 
-    assert image.shape == (2, 3, 8, 8)
+    assert residual.shape == (2, 3, 8, 8)
     assert features.shape == (2, 8, 8, 8)
 
 
@@ -61,6 +61,32 @@ def test_progressive_sr_generator_returns_image_pyramid_and_features():
     assert output["pyramid"][2].shape == (2, 3, 16, 16)
     assert output["pyramid"][4].shape == (2, 3, 8, 8)
     assert output["features"]
+
+
+def test_progressive_sr_generator_uses_bicubic_baselines_when_residual_is_zero():
+    generator = ProgressiveSRGenerator(
+        base_channels=8,
+        max_channels=8,
+        num_res_blocks_per_stage=1,
+        pyramid_scales=(1, 2, 4),
+    )
+    torch.nn.init.zeros_(generator.block.to_rgb.weight)
+    torch.nn.init.zeros_(generator.block.to_rgb.bias)
+    lr = torch.randn(2, 3, 8, 8)
+
+    output = generator(lr, target_size=(32, 32), return_intermediates=True)
+
+    expected_image = torch.nn.functional.interpolate(
+        lr, size=(32, 32), mode="bicubic", align_corners=False
+    )
+    assert output["image"].shape == (2, 3, 32, 32)
+    assert torch.allclose(output["image"], expected_image)
+    for scale, expected_size in {1: (32, 32), 2: (16, 16), 4: (8, 8)}.items():
+        expected_pyramid = torch.nn.functional.interpolate(
+            lr, size=expected_size, mode="bicubic", align_corners=False
+        )
+        assert output["pyramid"][scale].shape == (2, 3, *expected_size)
+        assert torch.allclose(output["pyramid"][scale], expected_pyramid)
 
 
 def test_multiscale_reconstruction_loss_matches_int_and_x_prefixed_keys():

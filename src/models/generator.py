@@ -13,7 +13,7 @@ from src.models.progressive_blocks import ProgressiveUpsampleBlock
 
 
 class ProgressiveSRGenerator(nn.Module):
-    """Generate SR images by expanding the LR spatial mean to target size."""
+    """Generate SR images as bicubic LR baselines plus learned residuals."""
 
     def __init__(
         self,
@@ -103,13 +103,18 @@ class ProgressiveSRGenerator(nn.Module):
 
         pyramid_sizes = self._pyramid_output_sizes(lr, target_hw)
         condition_features = self.condition_encoder(lr, pyramid_sizes)
-        image = lr.mean(dim=(-2, -1), keepdim=True)
+        seed = lr.mean(dim=(-2, -1), keepdim=True)
         if noise is not None:
-            image = image + noise.mean(dim=(-2, -1), keepdim=True)
-        features = self.input_proj(image)
-        pyramid: dict[int, torch.Tensor] = (
-            {1: image} if pyramid_sizes.get(1) == (1, 1) else {}
+            seed = seed + noise.mean(dim=(-2, -1), keepdim=True)
+        baseline = F.interpolate(
+            lr, size=target_hw, mode="bicubic", align_corners=False
         )
+        residual = torch.zeros_like(seed)
+        features = self.input_proj(seed)
+        residual_pyramid: dict[int, torch.Tensor] = (
+            {1: residual} if pyramid_sizes.get(1) == (1, 1) else {}
+        )
+        pyramid: dict[int, torch.Tensor] = {}
         intermediate_features: list[torch.Tensor] = []
 
         for size in self._progressive_sizes(target_hw):
@@ -124,20 +129,27 @@ class ProgressiveSRGenerator(nn.Module):
                     if condition_features
                     else None
                 )
-            image, features = self.block(
-                image, features, condition=condition, size=size
+            residual, features = self.block(
+                residual, features, condition=condition, size=size
             )
             if should_return_intermediates:
                 intermediate_features.append(features)
             for scale, pyramid_size in pyramid_sizes.items():
                 if size == pyramid_size:
-                    pyramid[scale] = image
+                    residual_pyramid[scale] = residual
+
+        image = baseline + residual
 
         for scale, size in pyramid_sizes.items():
-            pyramid.setdefault(
-                scale,
-                F.interpolate(image, size=size, mode="bilinear", align_corners=False),
+            scale_baseline = F.interpolate(
+                lr, size=size, mode="bicubic", align_corners=False
             )
+            scale_residual = residual_pyramid.get(scale)
+            if scale_residual is None:
+                scale_residual = F.interpolate(
+                    residual, size=size, mode="bilinear", align_corners=False
+                )
+            pyramid[scale] = scale_baseline + scale_residual
 
         return {
             "image": image,

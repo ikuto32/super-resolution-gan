@@ -14,6 +14,7 @@ from src.utils.random import get_rng_state, set_rng_state
 CHECKPOINT_KEYS = (
     "step",
     "epoch",
+    "seen_images",
     "generator",
     "discriminator",
     "generator_ema",
@@ -46,11 +47,13 @@ def save_checkpoint(
     scheduler_d: Any | None = None,
     config: dict[str, Any] | None = None,
     rng_state: dict[str, Any] | None = None,
+    seen_images: int | None = None,
 ) -> dict[str, Any]:
     """Save a design-compliant training checkpoint and return its payload."""
     checkpoint = {
         "step": int(step),
         "epoch": int(epoch),
+        "seen_images": int(seen_images) if seen_images is not None else None,
         "generator": generator.state_dict(),
         "discriminator": discriminator.state_dict(),
         "generator_ema": _maybe_state_dict(generator_ema),

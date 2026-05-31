@@ -15,6 +15,75 @@ def _canonical_key(key: int | str) -> int | str:
     return key
 
 
+def reconstruction_loss(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    loss_type: str = "l1",
+    reduction: str = "mean",
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Compute a configurable pixel reconstruction loss.
+
+    Supported ``loss_type`` values are ``"l1"``, ``"mse"`` and
+    ``"charbonnier"``. The Charbonnier loss is a smooth L1-like loss defined
+    as ``sqrt((prediction - target)^2 + eps^2)``.
+    """
+    normalized_type = loss_type.lower()
+    if normalized_type in {"l1", "mae"}:
+        return F.l1_loss(prediction, target, reduction=reduction)
+    if normalized_type in {"mse", "l2"}:
+        return F.mse_loss(prediction, target, reduction=reduction)
+    if normalized_type in {"charbonnier", "charb"}:
+        loss = torch.sqrt((prediction - target).square() + eps**2)
+        if reduction == "mean":
+            return loss.mean()
+        if reduction == "sum":
+            return loss.sum()
+        if reduction == "none":
+            return loss
+        raise ValueError(f"Unsupported reduction: {reduction}")
+    raise ValueError(f"Unsupported reconstruction loss type: {loss_type}")
+
+
+class ReconstructionLoss(nn.Module):
+    """Configurable pixel-space reconstruction loss module."""
+
+    def __init__(
+        self,
+        loss_type: str = "l1",
+        weight: float = 1.0,
+        reduction: str = "mean",
+        eps: float = 1e-6,
+    ) -> None:
+        super().__init__()
+        self.loss_type = loss_type
+        self.weight = float(weight)
+        self.reduction = reduction
+        self.eps = eps
+
+    def forward(self, prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        return (
+            reconstruction_loss(
+                prediction,
+                target,
+                loss_type=self.loss_type,
+                reduction=self.reduction,
+                eps=self.eps,
+            )
+            * self.weight
+        )
+
+
+def reconstruction_loss_from_config(config: dict[str, object]) -> ReconstructionLoss:
+    """Build :class:`ReconstructionLoss` from a lightweight config mapping."""
+    return ReconstructionLoss(
+        loss_type=str(config.get("type", config.get("loss_type", "l1"))),
+        weight=float(config.get("weight", 1.0)),
+        reduction=str(config.get("reduction", "mean")),
+        eps=float(config.get("eps", 1e-6)),
+    )
+
+
 class MultiScaleReconstructionLoss(nn.Module):
     """L1 reconstruction loss over matching generated and HR pyramid scales."""
 

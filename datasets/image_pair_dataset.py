@@ -44,7 +44,7 @@ class ImagePairDataset(Dataset):
         seed: int = 0,
         normalize: bool = True,
     ) -> None:
-        self.hr_paths = self._collect_paths(hr_root)
+        self.hr_paths, self.hr_root = self._collect_paths(hr_root)
         if not self.hr_paths:
             raise ValueError(f"no images found in {hr_root!r}")
         self.lr_root = Path(lr_root) if lr_root is not None else None
@@ -108,30 +108,32 @@ class ImagePairDataset(Dataset):
         }
 
     @staticmethod
-    def _collect_paths(root_or_paths: str | Path | Sequence[str | Path]) -> list[Path]:
+    def _collect_paths(
+        root_or_paths: str | Path | Sequence[str | Path],
+    ) -> tuple[list[Path], Path | None]:
         if isinstance(root_or_paths, (str, Path)):
             root = Path(root_or_paths)
             if root.is_file():
-                return [root]
-            return sorted(
-                path
-                for path in root.rglob("*")
-                if path.suffix.lower() in _IMAGE_EXTENSIONS
+                return [root], None
+            return (
+                sorted(
+                    path
+                    for path in root.rglob("*")
+                    if path.suffix.lower() in _IMAGE_EXTENSIONS
+                ),
+                root,
             )
-        return sorted(Path(path) for path in root_or_paths)
+        return sorted(Path(path) for path in root_or_paths), None
 
     def _lr_path_for(self, hr_path: Path) -> Path | None:
         if self.lr_root is None:
             return None
-        relative = Path(hr_path.name)
-        try:
-            common = Path(*hr_path.parts[:-1])
-            relative = hr_path.relative_to(common)
-        except ValueError:
-            pass
-        direct = self.lr_root / hr_path.name
-        nested = self.lr_root / relative
-        return nested if nested.exists() else direct
+        if self.hr_root is not None:
+            try:
+                return self.lr_root / hr_path.relative_to(self.hr_root)
+            except ValueError:
+                pass
+        return self.lr_root / hr_path.name
 
     def _seed_for_index(self, index: int) -> int:
         """Return a deterministic per-item seed for Python and PyTorch RNGs."""

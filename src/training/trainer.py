@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 from torch.nn.utils import clip_grad_norm_
 from tqdm import tqdm
@@ -23,6 +22,7 @@ from src.training.checkpointing import load_checkpoint, save_checkpoint
 from src.training.ema import EMAGenerator
 from src.training.logging import TrainingLogger
 from src.training.optimizers import build_optimizers
+from src.training.validation import _make_sample_grid as build_sample_grid
 from src.training.validation import run_validation
 from datasets.transforms import tensor_to_pil
 
@@ -126,9 +126,11 @@ class Trainer:
         self.logger = logger or TrainingLogger(
             output_dir / "logs",
             enable_tensorboard=bool(logging_cfg.get("tensorboard", True)),
-            wandb_config=logging_cfg.get("wandb", {})
-            if isinstance(logging_cfg.get("wandb", {}), Mapping)
-            else {},
+            wandb_config=(
+                logging_cfg.get("wandb", {})
+                if isinstance(logging_cfg.get("wandb", {}), Mapping)
+                else {}
+            ),
             run_config=self.config,
         )
         self.mixed_precision = (
@@ -205,9 +207,15 @@ class Trainer:
         self, lr: torch.Tensor, hr: torch.Tensor
     ) -> tuple[torch.Tensor, Mapping[Any, torch.Tensor]]:
         output = self.generator(lr, target_size=hr.shape[-2:])
+        sr, pyramid, _ = self._parse_generator_output(output)
+        return sr, pyramid
+
+    def _parse_generator_output(
+        self, output: torch.Tensor | Mapping[str, Any]
+    ) -> tuple[torch.Tensor, Mapping[Any, torch.Tensor], Mapping[str, Any]]:
         if isinstance(output, Mapping):
-            return output["image"], output.get("pyramid", {})
-        return output, {}
+            return output["image"], output.get("pyramid", {}), output
+        return output, {}, {}
 
     def _generator_supports_kwargs(self, *names: str) -> bool:
         signature = inspect.signature(self.generator.forward)
@@ -298,7 +306,10 @@ class Trainer:
 
         self.optimizer_g.zero_grad(set_to_none=True)
         with self._autocast():
-            fake, generated_pyramid = self._generator_forward(lr, hr)
+            generator_output = self.generator(lr, target_size=hr.shape[-2:])
+            fake, generated_pyramid, generator_output_mapping = (
+                self._parse_generator_output(generator_output)
+            )
             fake_scores_g = self._discriminate(fake, lr)
             perceptual_loss = (
                 self.perceptual_loss(fake, hr)
@@ -360,7 +371,7 @@ class Trainer:
         if self.log_every > 0 and self.step % self.log_every == 0:
             self.logger.log_scalars(logs, self.step, prefix="train")
         if self._should_write_sample():
-            self._write_sample(lr, fake, hr)
+            self._write_sample(lr, fake, hr, generator_output_mapping)
         if (
             self.validate_every > 0
             and self.val_loader is not None
@@ -384,24 +395,47 @@ class Trainer:
         return True
 
     def _make_sample_grid(
-        self, lr: torch.Tensor, sr: torch.Tensor, hr: torch.Tensor
+        self,
+        lr: torch.Tensor,
+        sr: torch.Tensor,
+        hr: torch.Tensor,
+        output: Mapping[str, Any] | None = None,
     ) -> torch.Tensor:
-        max_images = max(1, min(self.sample_max_images, int(hr.shape[0])))
-        lr_up = F.interpolate(
-            lr[:max_images], size=hr.shape[-2:], mode="bilinear", align_corners=False
+        baseline = pred_residual = target_residual = error_map = None
+        if output is not None and "baseline" in output and "residual" in output:
+            baseline = output["baseline"]
+            pred_residual = output["residual"]
+            target_residual = hr - baseline
+            error_map = (sr - hr).abs()
+        return build_sample_grid(
+            lr,
+            sr,
+            hr,
+            baseline=baseline,
+            pred_residual=pred_residual,
+            target_residual=target_residual,
+            error_map=error_map,
+            max_images=self.sample_max_images,
         )
-        rows = [
-            torch.cat(
-                [lr_up[index], sr[:max_images][index], hr[:max_images][index]], dim=-1
-            )
-            for index in range(max_images)
-        ]
-        return torch.cat(rows, dim=-2)
 
     def _write_sample(
-        self, lr: torch.Tensor, sr: torch.Tensor, hr: torch.Tensor
+        self,
+        lr: torch.Tensor,
+        sr: torch.Tensor,
+        hr: torch.Tensor,
+        output: Mapping[str, Any] | None = None,
     ) -> None:
-        grid = self._make_sample_grid(lr.detach(), sr.detach(), hr.detach())
+        detached_output = (
+            {
+                key: value.detach() if isinstance(value, torch.Tensor) else value
+                for key, value in output.items()
+            }
+            if output is not None
+            else None
+        )
+        grid = self._make_sample_grid(
+            lr.detach(), sr.detach(), hr.detach(), detached_output
+        )
         sample_path = (
             self.sample_dir
             / f"step_{self.step:08d}_kimg_{self.seen_images / 1000.0:.3f}.png"

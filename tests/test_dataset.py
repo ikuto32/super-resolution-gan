@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+import numpy as np
+import torch
+from PIL import Image
+
+from datasets import (
+    ImagePairDataset,
+    build_image_pyramid,
+    center_crop,
+    normalize_minus_one_to_one,
+    pil_to_tensor,
+)
+
+
+def _write_image(path, size=(32, 32)):
+    height, width = size
+    y, x = np.meshgrid(np.arange(height), np.arange(width), indexing="ij")
+    array = np.stack(
+        [
+            (x * 7 + y * 3) % 256,
+            (x * 5 + 17) % 256,
+            (y * 11 + 29) % 256,
+        ],
+        axis=-1,
+    ).astype(np.uint8)
+    Image.fromarray(array, mode="RGB").save(path)
+
+
+def test_image_pair_dataset_shapes_range_and_pyramid_keys(tmp_path):
+    _write_image(tmp_path / "sample.png", size=(32, 32))
+    dataset = ImagePairDataset(
+        tmp_path,
+        crop_size=32,
+        degradation={
+            "scale": 4,
+            "blur": {"sigma": 0.5},
+            "noise": {"std": 0.0},
+            "jpeg": {"quality": 95},
+        },
+        pyramid_scales=(1, 2, 4, 32),
+        validation=True,
+        seed=123,
+    )
+
+    item = dataset[0]
+
+    assert item["hr"].shape == (3, 32, 32)
+    assert item["lr"].shape == (3, 8, 8)
+    assert set(item["hr_pyramid"]) == {"x1", "x2", "x4", "x32"}
+    assert item["hr_pyramid"]["x32"].shape == (3, 1, 1)
+    assert -1.0 <= item["hr"].min() <= item["hr"].max() <= 1.0
+    assert -1.0 <= item["lr"].min() <= item["lr"].max() <= 1.0
+
+
+def test_validation_mode_is_deterministic(tmp_path):
+    _write_image(tmp_path / "sample.png", size=(40, 40))
+    dataset = ImagePairDataset(
+        tmp_path,
+        crop_size=32,
+        degradation={
+            "scale": 2,
+            "blur": {"sigma": [0.1, 1.2]},
+            "noise": {"std": [0.001, 0.01]},
+            "jpeg": {"quality": [45, 90]},
+        },
+        validation=True,
+        seed=999,
+    )
+
+    first = dataset[0]
+    second = dataset[0]
+
+    assert torch.equal(first["hr"], second["hr"])
+    assert torch.equal(first["lr"], second["lr"])
+    for key in first["hr_pyramid"]:
+        assert torch.equal(first["hr_pyramid"][key], second["hr_pyramid"][key])
+
+
+def test_one_by_one_pyramid_uses_spatial_mean():
+    hr = torch.arange(12, dtype=torch.float32).view(3, 2, 2)
+
+    pyramid = build_image_pyramid(hr, scales=(2,))
+
+    assert torch.equal(pyramid["x2"], hr.mean(dim=(-2, -1), keepdim=True))
+
+
+def test_transforms_crop_and_normalize():
+    image = Image.new("RGB", (10, 8), color=(128, 64, 32))
+
+    cropped = center_crop(image, (4, 6))
+    tensor = normalize_minus_one_to_one(pil_to_tensor(cropped))
+
+    assert cropped.size == (6, 4)
+    assert tensor.shape == (3, 4, 6)
+    assert tensor.min() >= -1.0
+    assert tensor.max() <= 1.0

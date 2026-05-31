@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+import inspect
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from tqdm import tqdm
 
 from src.losses.r3gan import discriminator_loss, r1_regularization, r2_regularization
 from src.losses.total import generator_losses
+from src.models.discriminator import ResolutionAgnosticDiscriminator
 from src.training.checkpointing import load_checkpoint, save_checkpoint
 from src.training.ema import EMAGenerator
 from src.training.logging import TrainingLogger
@@ -154,16 +156,40 @@ class Trainer:
         self._next_sample_kimg = (
             self.sample_every_kimg if self.sample_every_kimg > 0 else 0.0
         )
+        self._discriminator_accepts_condition: bool | None = None
 
     def _autocast(self):
         if self.mixed_precision:
             return torch.amp.autocast(device_type=self.device.type)
         return nullcontext()
 
+    def _discriminator_uses_condition(self) -> bool:
+        if isinstance(self.discriminator, ResolutionAgnosticDiscriminator):
+            return bool(self.discriminator.conditional)
+        if self._discriminator_accepts_condition is None:
+            signature = inspect.signature(self.discriminator.forward)
+            positional_parameters = [
+                parameter
+                for parameter in signature.parameters.values()
+                if parameter.kind
+                in (
+                    inspect.Parameter.POSITIONAL_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                )
+            ]
+            self._discriminator_accepts_condition = (
+                any(
+                    parameter.kind is inspect.Parameter.VAR_POSITIONAL
+                    for parameter in signature.parameters.values()
+                )
+                or len(positional_parameters) >= 2
+            )
+        return self._discriminator_accepts_condition
+
     def _discriminate(self, images: torch.Tensor, lr: torch.Tensor) -> torch.Tensor:
-        try:
+        if self._discriminator_uses_condition():
             output = self.discriminator(images, lr)
-        except TypeError:
+        else:
             output = self.discriminator(images)
         return _module_score(output)
 

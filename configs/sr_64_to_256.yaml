@@ -2,6 +2,16 @@ project:
   name: super-resolution-gan
   output_dir: runs/sr_64_to_256
 
+logging:
+  tensorboard: true
+  wandb:
+    enabled: false
+    project: super-resolution-gan
+    entity: null
+    name: null
+    mode: online
+    tags: []
+
 seed: 42
 
 data:
@@ -61,6 +71,9 @@ training:
   log_every: 100
   validate_every: 1000
   save_every: 5000
+  sample_every_kimg: 50
+  sample_max_images: 4
+  sample_dir: samples
   ema:
     enabled: true
     decay: 0.999

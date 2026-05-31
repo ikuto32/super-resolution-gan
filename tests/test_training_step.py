@@ -21,6 +21,33 @@ class TinyGenerator(nn.Module):
         return {"image": sr, "pyramid": {1: sr}}
 
 
+class TinyResidualGenerator(nn.Module):
+    def __init__(self, baseline_offset: float = 2.0) -> None:
+        super().__init__()
+        self.residual_value = nn.Parameter(torch.zeros(()))
+        self.baseline_offset = float(baseline_offset)
+        self.last_baseline: torch.Tensor | None = None
+        self.last_residual: torch.Tensor | None = None
+
+    def forward(self, lr: torch.Tensor, target_size) -> dict[str, object]:
+        baseline = (
+            torch.nn.functional.interpolate(
+                lr, size=target_size, mode="bilinear", align_corners=False
+            )
+            + self.baseline_offset
+        )
+        residual = torch.ones_like(baseline) * self.residual_value
+        image = baseline + residual
+        self.last_baseline = baseline.detach()
+        self.last_residual = residual.detach()
+        return {
+            "baseline": baseline,
+            "residual": residual,
+            "image": image,
+            "pyramid": {1: image},
+        }
+
+
 class CountingSGD(torch.optim.SGD):
     def __init__(self, params, *args, **kwargs) -> None:
         super().__init__(params, *args, **kwargs)
@@ -104,6 +131,7 @@ def _config(tmp_path):
         "loss": {
             "lambda_adv": 0.1,
             "lambda_pixel": 1.0,
+            "lambda_residual": 1.0,
             "lambda_multiscale": 0.0,
             "lambda_perceptual": 0.0,
             "lambda_consistency": 0.1,
@@ -182,6 +210,48 @@ def test_cpu_tiny_training_step_checkpoint_and_no_nan(tmp_path):
         trainer.generator.parameters(), restored_g.parameters(), strict=True
     ):
         assert torch.allclose(saved_parameter, restored_parameter)
+
+
+def test_training_step_accepts_residual_generator_and_uses_baseline_target(tmp_path):
+    lr = torch.zeros(2, 3, 4, 4)
+    hr = torch.ones(2, 3, 8, 8)
+    batch = {"lr": lr, "hr": hr, "hr_pyramid": {1: hr}}
+    config = _config(tmp_path)
+    config["loss"].update(
+        {
+            "lambda_adv": 0.0,
+            "lambda_pixel": 1.0,
+            "lambda_residual": 1.0,
+            "lambda_consistency": 0.0,
+        }
+    )
+    generator = TinyResidualGenerator(baseline_offset=3.0)
+    trainer = Trainer(
+        generator, TinyDiscriminator(), [batch], config=config, device="cpu"
+    )
+
+    logs = trainer.train_step(batch)
+
+    assert trainer.step == 1
+    assert torch.isfinite(torch.tensor(logs["loss_image"]))
+    assert torch.isfinite(torch.tensor(logs["loss_residual"]))
+    assert logs["loss_image"] == pytest.approx(2.0)
+    assert logs["loss_pixel"] == pytest.approx(logs["loss_image"])
+    assert generator.last_baseline is not None
+    assert generator.last_residual is not None
+    same_resolution_target = hr - generator.last_baseline
+    expected_residual_loss = torch.nn.functional.l1_loss(
+        generator.last_residual, same_resolution_target
+    )
+    raw_lr_target = torch.nn.functional.interpolate(
+        lr, size=hr.shape[-2:], mode="bilinear", align_corners=False
+    )
+    raw_lr_residual_loss = torch.nn.functional.l1_loss(
+        generator.last_residual, hr - raw_lr_target
+    )
+
+    assert logs["loss_residual"] == pytest.approx(float(expected_residual_loss))
+    assert logs["loss_residual"] != pytest.approx(float(raw_lr_residual_loss))
 
 
 def test_resume_after_completed_epoch_does_not_rerun_epoch(tmp_path):
@@ -264,7 +334,9 @@ def test_discriminator_internal_type_error_is_not_swallowed(tmp_path):
         trainer.train_step(next(iter(_loader())))
 
 
-def test_training_step_passes_perceptual_loss_when_weight_is_positive(tmp_path, monkeypatch):
+def test_training_step_passes_perceptual_loss_when_weight_is_positive(
+    tmp_path, monkeypatch
+):
     class RecordingPerceptual(nn.Module):
         def __init__(self) -> None:
             super().__init__()
@@ -290,4 +362,3 @@ def test_training_step_passes_perceptual_loss_when_weight_is_positive(tmp_path, 
     assert trainer.perceptual_loss is perceptual_module
     assert perceptual_module.calls == 1
     assert logs["loss_perceptual"] > 0.0
-

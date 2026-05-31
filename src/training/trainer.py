@@ -203,11 +203,25 @@ class Trainer:
 
     def _generator_forward(
         self, lr: torch.Tensor, hr: torch.Tensor
-    ) -> tuple[torch.Tensor, Mapping[Any, torch.Tensor]]:
+    ) -> tuple[
+        torch.Tensor,
+        Mapping[Any, torch.Tensor],
+        torch.Tensor | None,
+        torch.Tensor | None,
+    ]:
         output = self.generator(lr, target_size=hr.shape[-2:])
         if isinstance(output, Mapping):
-            return output["image"], output.get("pyramid", {})
-        return output, {}
+            return (
+                output["image"],
+                output.get("pyramid", {}),
+                output.get("baseline")
+                if isinstance(output.get("baseline"), torch.Tensor)
+                else None,
+                output.get("residual")
+                if isinstance(output.get("residual"), torch.Tensor)
+                else None,
+            )
+        return output, {}, None, None
 
     def _generator_supports_kwargs(self, *names: str) -> bool:
         signature = inspect.signature(self.generator.forward)
@@ -255,7 +269,7 @@ class Trainer:
         for _ in range(self.n_critic):
             self.optimizer_d.zero_grad(set_to_none=True)
             with torch.no_grad():
-                fake_detached, _ = self._generator_forward(lr, hr)
+                fake_detached, _, _, _ = self._generator_forward(lr, hr)
             real_for_d = hr.detach().requires_grad_(
                 float(self.loss_config.get("lambda_r1", 0.0)) > 0.0
             )
@@ -298,7 +312,9 @@ class Trainer:
 
         self.optimizer_g.zero_grad(set_to_none=True)
         with self._autocast():
-            fake, generated_pyramid = self._generator_forward(lr, hr)
+            fake, generated_pyramid, baseline, residual = self._generator_forward(
+                lr, hr
+            )
             fake_scores_g = self._discriminate(fake, lr)
             perceptual_loss = (
                 self.perceptual_loss(fake, hr)
@@ -327,6 +343,8 @@ class Trainer:
                 sr=fake,
                 hr=hr,
                 lr=lr,
+                baseline=baseline,
+                residual=residual,
                 generated_pyramid=generated_pyramid,
                 hr_pyramid=hr_pyramid,
                 perceptual_loss=perceptual_loss,

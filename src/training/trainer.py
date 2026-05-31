@@ -14,7 +14,11 @@ from torch import nn
 from torch.nn.utils import clip_grad_norm_
 from tqdm import tqdm
 
-from src.losses.diffusion import degraded_noisy_state_from_config, denoising_loss
+from src.losses.diffusion import (
+    degraded_noisy_state_from_config,
+    denoising_loss,
+    diffusion_prediction_type,
+)
 from src.losses.perceptual import build_perceptual_loss
 from src.losses.r3gan import discriminator_loss, r1_regularization, r2_regularization
 from src.losses.total import generator_losses
@@ -40,6 +44,40 @@ def _module_score(output: Any) -> torch.Tensor:
     raise TypeError(
         "discriminator output must be a tensor or mapping with score/patch_logits"
     )
+
+
+def _match_spatial_size(tensor: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
+    if tensor.shape[-2:] == reference.shape[-2:]:
+        return tensor
+    return F.interpolate(
+        tensor, size=reference.shape[-2:], mode="bilinear", align_corners=False
+    )
+
+
+def _interpret_diffusion_prediction(
+    prediction: torch.Tensor,
+    state: Mapping[str, torch.Tensor],
+    hr: torch.Tensor,
+    prediction_type: str,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Map raw diffusion-head output to loss target and reconstructed x0 image."""
+    prediction_type = prediction_type.lower()
+    if prediction_type == "x0":
+        pred_x0 = _match_spatial_size(prediction, hr)
+        return prediction, hr, pred_x0
+    if prediction_type == "final_residual":
+        x_t = _match_spatial_size(state["x_t"], prediction)
+        target = state.get("target")
+        if not isinstance(target, torch.Tensor):
+            target = hr - _match_spatial_size(state["x_t"], hr)
+        pred_x0 = _match_spatial_size(x_t + prediction, hr)
+        return prediction, target, pred_x0
+    if prediction_type == "step_residual":
+        raise NotImplementedError(
+            "loss.diffusion.prediction_type='step_residual' requires the "
+            "degradation state to expose both G_t x0 and G_{t-1} x0"
+        )
+    raise ValueError(f"unsupported diffusion prediction_type: {prediction_type!r}")
 
 
 def _batch_to_device(batch: Mapping[str, Any], device: torch.device) -> dict[str, Any]:
@@ -317,9 +355,18 @@ class Trainer:
                 diffusion_cfg = self.loss_config.get("diffusion", {})
                 if not isinstance(diffusion_cfg, Mapping):
                     diffusion_cfg = {}
+                prediction_type = diffusion_prediction_type(diffusion_cfg)
+                diffusion_loss_prediction, diffusion_target, _pred_x0 = (
+                    _interpret_diffusion_prediction(
+                        diffusion_prediction,
+                        diffusion_state,
+                        hr,
+                        prediction_type,
+                    )
+                )
                 diffusion_loss = denoising_loss(
-                    diffusion_prediction,
-                    hr,
+                    diffusion_loss_prediction,
+                    diffusion_target,
                     loss_type=str(diffusion_cfg.get("loss_type", "l1")),
                 )
             g_losses = generator_losses(

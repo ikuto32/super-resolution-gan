@@ -381,14 +381,15 @@ class Trainer:
                 progress.set_postfix(
                     loss_g=logs["loss_total"], loss_d=logs["loss_d"], lr=logs["lr_g"]
                 )
-        self.save(self.checkpoint_dir / "latest.pt")
+            self.epoch = epoch + 1
+            self.save(self.checkpoint_dir / "latest.pt")
         self.logger.close()
 
     def save(self, path: str | Path) -> dict[str, Any]:
         return save_checkpoint(
             path,
             step=self.step,
-            epoch=self.epoch,
+            next_epoch=self.epoch,
             generator=self.generator,
             discriminator=self.discriminator,
             generator_ema=self.ema,
@@ -416,7 +417,7 @@ class Trainer:
             restore_rng=restore_rng,
         )
         self.step = int(checkpoint.get("step", 0))
-        self.epoch = int(checkpoint.get("epoch", 0))
+        self.epoch = int(checkpoint.get("next_epoch", checkpoint.get("epoch", 0)))
         loaded_seen_images = checkpoint.get("seen_images")
         if loaded_seen_images is not None:
             self.seen_images = int(loaded_seen_images)

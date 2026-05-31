@@ -294,6 +294,10 @@ def test_training_step_passes_perceptual_loss_when_weight_is_positive(
     assert logs["loss_perceptual"] > 0.0
 
 
+def test_trainer_sample_grid_uses_residual_panels_when_available(tmp_path):
+    trainer = Trainer(
+        TinyGenerator(),
+
 class ResidualGenerator(nn.Module):
     def __init__(self, residual_value: float = 0.25) -> None:
         super().__init__()
@@ -353,6 +357,68 @@ def test_generator_forward_backfills_baseline_residual_for_image_only_mapping(
         config=_config(tmp_path),
         device="cpu",
     )
+    batch = next(iter(_loader()))
+
+    generated = trainer._generator_forward(batch["lr"], batch["hr"])
+
+    assert torch.allclose(
+        generated["image"], generated["baseline"] + generated["residual"]
+    )
+    assert generated["pyramid"] == {}
+
+
+def test_residual_loss_matches_image_reconstruction_without_clamp(tmp_path):
+    config = _config(tmp_path)
+    config["loss"]["prediction_target"] = "residual"
+    config["loss"]["lambda_adv"] = 0.0
+    config["loss"]["lambda_multiscale"] = 0.0
+    config["loss"]["lambda_perceptual"] = 0.0
+    config["loss"]["lambda_consistency"] = 0.0
+    config["loss"]["lambda_diffusion"] = 0.0
+
+    trainer = Trainer(
+        ResidualGenerator(),
+        TinyDiscriminator(),
+        _loader(),
+        config=config,
+        device="cpu",
+    )
+
+    logs = trainer.train_step(next(iter(_loader())))
+
+    assert torch.isclose(
+        torch.tensor(logs["loss_residual"]),
+        torch.tensor(logs["loss_pixel_image"]),
+    )
+    assert torch.isclose(
+        torch.tensor(logs["loss_pixel"]),
+        torch.tensor(logs["loss_residual"]),
+    )
+
+
+def test_trainer_sample_grid_uses_residual_panels_when_available(tmp_path):
+    trainer = Trainer(
+        TinyGenerator(),
+        TinyDiscriminator(),
+        _loader(),
+        config=_config(tmp_path),
+        device="cpu",
+    )
+
+    lr = torch.zeros(1, 3, 4, 4)
+    hr = torch.ones(1, 3, 8, 8)
+    baseline = torch.zeros_like(hr)
+    residual = torch.full_like(hr, 2.0)
+    sr = baseline + residual
+
+    residual_grid = trainer._make_sample_grid(
+        lr, sr, hr, {"baseline": baseline, "residual": residual}
+    )
+    fallback_grid = trainer._make_sample_grid(lr, sr, hr, {})
+
+    assert residual_grid.shape == (3, 8, 7 * 8)
+    assert fallback_grid.shape == (3, 8, 3 * 8)
+
     batch = next(iter(_loader()))
 
     generated = trainer._generator_forward(batch["lr"], batch["hr"])

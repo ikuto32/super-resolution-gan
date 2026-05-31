@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 from PIL import Image
+from torch.utils.data import DataLoader
 
 from datasets import (
     ImagePairDataset,
@@ -52,6 +53,22 @@ def test_image_pair_dataset_shapes_range_and_pyramid_keys(tmp_path):
     assert -1.0 <= item["hr"].min() <= item["hr"].max() <= 1.0
     assert -1.0 <= item["lr"].min() <= item["lr"].max() <= 1.0
 
+
+def test_image_pair_dataset_default_collate_without_lr_root(tmp_path):
+    _write_image(tmp_path / "sample_0.png", size=(32, 32))
+    _write_image(tmp_path / "sample_1.png", size=(32, 32))
+    dataset = ImagePairDataset(
+        tmp_path,
+        crop_size=32,
+        degradation={"scale": 4, "noise": {"std": 0.0}},
+        validation=True,
+    )
+
+    batch = next(iter(DataLoader(dataset, batch_size=2)))
+
+    assert batch["lr"].shape == (2, 3, 8, 8)
+    assert batch["hr"].shape == (2, 3, 32, 32)
+    assert batch["meta"]["lr_path"] == ["", ""]
 
 def test_validation_mode_is_deterministic(tmp_path):
     _write_image(tmp_path / "sample.png", size=(40, 40))

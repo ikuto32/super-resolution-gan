@@ -123,7 +123,7 @@ def test_cpu_tiny_training_step_checkpoint_and_no_nan(tmp_path):
     saved = save_checkpoint(
         checkpoint_path,
         step=trainer.step,
-        epoch=trainer.epoch,
+        next_epoch=trainer.epoch,
         generator=trainer.generator,
         discriminator=trainer.discriminator,
         generator_ema=trainer.ema,
@@ -134,7 +134,7 @@ def test_cpu_tiny_training_step_checkpoint_and_no_nan(tmp_path):
     assert checkpoint_path.exists()
     assert {
         "step",
-        "epoch",
+        "next_epoch",
         "seen_images",
         "generator",
         "discriminator",
@@ -147,6 +147,7 @@ def test_cpu_tiny_training_step_checkpoint_and_no_nan(tmp_path):
         "config",
         "rng_state",
     }.issubset(saved)
+    assert "epoch" not in saved
 
     restored_g = TinyGenerator()
     restored_d = TinyDiscriminator()
@@ -168,6 +169,34 @@ def test_cpu_tiny_training_step_checkpoint_and_no_nan(tmp_path):
         trainer.generator.parameters(), restored_g.parameters(), strict=True
     ):
         assert torch.allclose(saved_parameter, restored_parameter)
+
+
+def test_resume_after_completed_epoch_does_not_rerun_epoch(tmp_path):
+    config = _config(tmp_path)
+    trainer = Trainer(
+        TinyGenerator(), TinyDiscriminator(), _loader(), config=config, device="cpu"
+    )
+
+    trainer.fit()
+
+    checkpoint_path = tmp_path / "checkpoints" / "latest.pt"
+    completed = load_checkpoint(checkpoint_path, restore_rng=False)
+    assert completed["next_epoch"] == 1
+    assert completed["step"] == 1
+    assert "epoch" not in completed
+
+    resumed = Trainer(
+        TinyGenerator(), TinyDiscriminator(), _loader(), config=config, device="cpu"
+    )
+    resumed.load(checkpoint_path, restore_rng=False)
+    assert resumed.epoch == 1
+
+    resumed.fit()
+
+    reloaded = load_checkpoint(checkpoint_path, restore_rng=False)
+    assert resumed.step == 1
+    assert reloaded["next_epoch"] == 1
+    assert reloaded["step"] == 1
 
 
 def test_training_step_writes_samples_every_configured_kimg(tmp_path):

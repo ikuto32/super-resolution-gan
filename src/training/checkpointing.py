@@ -13,7 +13,7 @@ from src.utils.random import get_rng_state, set_rng_state
 
 CHECKPOINT_KEYS = (
     "step",
-    "epoch",
+    "next_epoch",
     "seen_images",
     "generator",
     "discriminator",
@@ -38,7 +38,7 @@ def save_checkpoint(
     path: str | Path,
     *,
     step: int,
-    epoch: int,
+    next_epoch: int,
     generator: nn.Module,
     discriminator: nn.Module,
     optimizer_g: torch.optim.Optimizer,
@@ -51,10 +51,14 @@ def save_checkpoint(
     rng_state: dict[str, Any] | None = None,
     seen_images: int | None = None,
 ) -> dict[str, Any]:
-    """Save a design-compliant training checkpoint and return its payload."""
+    """Save a design-compliant training checkpoint and return its payload.
+
+    ``next_epoch`` is the epoch index that ``Trainer.fit()`` should use as
+    the start of ``range(next_epoch, epochs)`` when resuming.
+    """
     checkpoint = {
         "step": int(step),
-        "epoch": int(epoch),
+        "next_epoch": int(next_epoch),
         "seen_images": int(seen_images) if seen_images is not None else None,
         "generator": generator.state_dict(),
         "discriminator": discriminator.state_dict(),

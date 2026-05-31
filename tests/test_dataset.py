@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import random
+
 import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import DataLoader
 
 from datasets import (
+    DegradationPipeline,
     ImagePairDataset,
     build_image_pyramid,
     center_crop,
@@ -69,6 +72,24 @@ def test_image_pair_dataset_default_collate_without_lr_root(tmp_path):
     assert batch["lr"].shape == (2, 3, 8, 8)
     assert batch["hr"].shape == (2, 3, 32, 32)
     assert batch["meta"]["lr_path"] == ["", ""]
+
+
+def test_degradation_noise_supports_min_max_keys():
+    tensor = torch.full((3, 16, 16), 0.5)
+    pipeline = DegradationPipeline(
+        {
+            "scale": 1,
+            "noise": {"enabled": True, "std_min": 0.01, "std_max": 0.02},
+            "clamp": False,
+        }
+    )
+    generator = torch.Generator().manual_seed(123)
+
+    degraded = pipeline(tensor, rng=random.Random(123), torch_generator=generator)
+
+    assert degraded.shape == tensor.shape
+    assert not torch.equal(degraded, tensor)
+    assert torch.count_nonzero(degraded - tensor) > 0
 
 
 def test_validation_mode_is_deterministic(tmp_path):

@@ -96,6 +96,7 @@ def test_cpu_tiny_training_step_checkpoint_and_no_nan(tmp_path):
     trainer = Trainer(
         generator, discriminator, _loader(), config=_config(tmp_path), device="cpu"
     )
+    assert trainer.scaler is None
 
     batch = next(iter(_loader()))
     logs = trainer.train_step(batch)
@@ -131,6 +132,7 @@ def test_cpu_tiny_training_step_checkpoint_and_no_nan(tmp_path):
         "optimizer_d",
         "scheduler_g",
         "scheduler_d",
+        "grad_scaler",
         "config",
         "rng_state",
     }.issubset(saved)

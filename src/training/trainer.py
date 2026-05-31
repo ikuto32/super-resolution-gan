@@ -131,6 +131,9 @@ class Trainer:
             bool(training_cfg.get("mixed_precision", False))
             and self.device.type == "cuda"
         )
+        self.scaler = (
+            torch.amp.GradScaler("cuda") if self.mixed_precision else None
+        )
         self.grad_clip_norm = training_cfg.get("grad_clip_norm")
         self.log_every = int(training_cfg.get("log_every", 100))
         self.validate_every = int(training_cfg.get("validate_every", 1000))
@@ -205,10 +208,21 @@ class Trainer:
                 loss_d = loss_d + r2_regularization(fake_scores, fake_for_d) * float(
                     self.loss_config.get("lambda_r2", 0.0)
                 )
-        loss_d.backward()
-        if self.grad_clip_norm is not None:
-            clip_grad_norm_(self.discriminator.parameters(), float(self.grad_clip_norm))
-        self.optimizer_d.step()
+        if self.scaler is not None:
+            self.scaler.scale(loss_d).backward()
+            if self.grad_clip_norm is not None:
+                self.scaler.unscale_(self.optimizer_d)
+                clip_grad_norm_(
+                    self.discriminator.parameters(), float(self.grad_clip_norm)
+                )
+            self.scaler.step(self.optimizer_d)
+        else:
+            loss_d.backward()
+            if self.grad_clip_norm is not None:
+                clip_grad_norm_(
+                    self.discriminator.parameters(), float(self.grad_clip_norm)
+                )
+            self.optimizer_d.step()
         if self.scheduler_d is not None:
             self.scheduler_d.step()
 
@@ -226,10 +240,18 @@ class Trainer:
                 weights=self.loss_config,
             )
             loss_g = g_losses["loss_total"]
-        loss_g.backward()
-        if self.grad_clip_norm is not None:
-            clip_grad_norm_(self.generator.parameters(), float(self.grad_clip_norm))
-        self.optimizer_g.step()
+        if self.scaler is not None:
+            self.scaler.scale(loss_g).backward()
+            if self.grad_clip_norm is not None:
+                self.scaler.unscale_(self.optimizer_g)
+                clip_grad_norm_(self.generator.parameters(), float(self.grad_clip_norm))
+            self.scaler.step(self.optimizer_g)
+            self.scaler.update()
+        else:
+            loss_g.backward()
+            if self.grad_clip_norm is not None:
+                clip_grad_norm_(self.generator.parameters(), float(self.grad_clip_norm))
+            self.optimizer_g.step()
         if self.scheduler_g is not None:
             self.scheduler_g.step()
         if self.ema is not None:
@@ -332,6 +354,7 @@ class Trainer:
             optimizer_d=self.optimizer_d,
             scheduler_g=self.scheduler_g,
             scheduler_d=self.scheduler_d,
+            grad_scaler=self.scaler,
             config=dict(self.config),
             seen_images=self.seen_images,
         )
@@ -346,6 +369,7 @@ class Trainer:
             optimizer_d=self.optimizer_d,
             scheduler_g=self.scheduler_g,
             scheduler_d=self.scheduler_d,
+            grad_scaler=self.scaler,
             map_location=self.device,
             restore_rng=restore_rng,
         )

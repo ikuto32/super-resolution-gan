@@ -1,0 +1,78 @@
+project:
+  name: super-resolution-gan
+  output_dir: runs/sr_64_to_256
+
+seed: 42
+
+data:
+  train_dir: data/train
+  val_dir: data/val
+  image_size_hr: [256, 256]
+  image_size_lr: [64, 64]
+  batch_size: 16
+  num_workers: 8
+
+degradation:
+  downsample:
+    method: bicubic
+    scale: 4
+  blur:
+    enabled: true
+    sigma_min: 0.1
+    sigma_max: 1.2
+  noise:
+    enabled: true
+    std_min: 0.0
+    std_max: 0.03
+  jpeg:
+    enabled: false
+
+model:
+  generator:
+    base_channels: 128
+    max_channels: 512
+    num_res_blocks_per_stage: 2
+    condition_type: film
+    start_from_mean_pixel: true
+    return_intermediates: true
+
+  discriminator:
+    base_channels: 64
+    max_channels: 512
+    conditional: true
+    input_condition_mode: concat
+    patch_output: true
+    global_aggregation: mean
+
+loss:
+  lambda_adv: 0.1
+  lambda_pixel: 1.0
+  lambda_multiscale: 0.5
+  lambda_perceptual: 0.1
+  lambda_consistency: 1.0
+  lambda_diffusion: 0.0
+  lambda_r1: 10.0
+  lambda_r2: 0.0
+
+training:
+  epochs: 100
+  mixed_precision: true
+  grad_clip_norm: 1.0
+  log_every: 100
+  validate_every: 1000
+  save_every: 5000
+  ema:
+    enabled: true
+    decay: 0.999
+
+optimizer:
+  generator:
+    type: adamw
+    lr: 0.0002
+    betas: [0.0, 0.99]
+    weight_decay: 0.0
+  discriminator:
+    type: adamw
+    lr: 0.0002
+    betas: [0.0, 0.99]
+    weight_decay: 0.0

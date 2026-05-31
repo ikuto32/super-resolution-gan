@@ -68,6 +68,7 @@ training:
   epochs: 100
   mixed_precision: true
   grad_clip_norm: 1.0
+  n_critic: 1
   log_every: 100
   validate_every: 1000
   save_every: 5000

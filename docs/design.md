@@ -795,14 +795,14 @@ Each iteration should perform:
    - generated pyramid
    - optional diffusion predictions
 
-3. Discriminator update:
+3. Discriminator update (`training.n_critic` times):
    - compute D(real, lr)
    - compute D(fake.detach(), lr)
    - compute discriminator adversarial loss
    - compute regularization
    - update D
 
-4. Generator update:
+4. Generator update (once):
    - compute D(fake, lr)
    - compute adversarial generator loss
    - compute reconstruction losses
@@ -949,6 +949,7 @@ training:
   epochs: 100
   mixed_precision: true
   grad_clip_norm: 1.0
+  n_critic: 1
   log_every: 100
   validate_every: 1000
   save_every: 5000

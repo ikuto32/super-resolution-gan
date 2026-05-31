@@ -131,10 +131,9 @@ class Trainer:
             bool(training_cfg.get("mixed_precision", False))
             and self.device.type == "cuda"
         )
-        self.scaler = (
-            torch.amp.GradScaler("cuda") if self.mixed_precision else None
-        )
+        self.scaler = torch.amp.GradScaler("cuda") if self.mixed_precision else None
         self.grad_clip_norm = training_cfg.get("grad_clip_norm")
+        self.n_critic = max(1, int(training_cfg.get("n_critic", 1)))
         self.log_every = int(training_cfg.get("log_every", 100))
         self.validate_every = int(training_cfg.get("validate_every", 1000))
         self.save_every = int(training_cfg.get("save_every", 5000))
@@ -177,7 +176,7 @@ class Trainer:
         return output, {}
 
     def train_step(self, batch: Mapping[str, Any]) -> dict[str, float]:
-        """Run one discriminator update and one generator update."""
+        """Run ``n_critic`` discriminator updates and one generator update."""
         self.generator.train()
         self.discriminator.train()
         batch = _batch_to_device(batch, self.device)
@@ -185,46 +184,50 @@ class Trainer:
         hr = batch["hr"]
         hr_pyramid = batch.get("hr_pyramid")
 
-        self.optimizer_d.zero_grad(set_to_none=True)
-        with torch.no_grad():
-            fake_detached, _ = self._generator_forward(lr, hr)
-        real_for_d = hr.detach().requires_grad_(
-            float(self.loss_config.get("lambda_r1", 0.0)) > 0.0
-        )
-        fake_for_d = fake_detached.detach().requires_grad_(
-            float(self.loss_config.get("lambda_r2", 0.0)) > 0.0
-        )
-        with self._autocast():
-            real_scores = self._discriminate(real_for_d, lr)
-            fake_scores = self._discriminate(fake_for_d, lr)
-            loss_d = discriminator_loss(
-                real_scores, fake_scores, real_for_d, fake_for_d
+        loss_d_values: list[torch.Tensor] = []
+        for _ in range(self.n_critic):
+            self.optimizer_d.zero_grad(set_to_none=True)
+            with torch.no_grad():
+                fake_detached, _ = self._generator_forward(lr, hr)
+            real_for_d = hr.detach().requires_grad_(
+                float(self.loss_config.get("lambda_r1", 0.0)) > 0.0
             )
-            if float(self.loss_config.get("lambda_r1", 0.0)) > 0.0:
-                loss_d = loss_d + r1_regularization(real_scores, real_for_d) * float(
-                    self.loss_config.get("lambda_r1", 0.0)
+            fake_for_d = fake_detached.detach().requires_grad_(
+                float(self.loss_config.get("lambda_r2", 0.0)) > 0.0
+            )
+            with self._autocast():
+                real_scores = self._discriminate(real_for_d, lr)
+                fake_scores = self._discriminate(fake_for_d, lr)
+                loss_d = discriminator_loss(
+                    real_scores, fake_scores, real_for_d, fake_for_d
                 )
-            if float(self.loss_config.get("lambda_r2", 0.0)) > 0.0:
-                loss_d = loss_d + r2_regularization(fake_scores, fake_for_d) * float(
-                    self.loss_config.get("lambda_r2", 0.0)
-                )
-        if self.scaler is not None:
-            self.scaler.scale(loss_d).backward()
-            if self.grad_clip_norm is not None:
-                self.scaler.unscale_(self.optimizer_d)
-                clip_grad_norm_(
-                    self.discriminator.parameters(), float(self.grad_clip_norm)
-                )
-            self.scaler.step(self.optimizer_d)
-        else:
-            loss_d.backward()
-            if self.grad_clip_norm is not None:
-                clip_grad_norm_(
-                    self.discriminator.parameters(), float(self.grad_clip_norm)
-                )
-            self.optimizer_d.step()
-        if self.scheduler_d is not None:
-            self.scheduler_d.step()
+                if float(self.loss_config.get("lambda_r1", 0.0)) > 0.0:
+                    loss_d = loss_d + r1_regularization(
+                        real_scores, real_for_d
+                    ) * float(self.loss_config.get("lambda_r1", 0.0))
+                if float(self.loss_config.get("lambda_r2", 0.0)) > 0.0:
+                    loss_d = loss_d + r2_regularization(
+                        fake_scores, fake_for_d
+                    ) * float(self.loss_config.get("lambda_r2", 0.0))
+            if self.scaler is not None:
+                self.scaler.scale(loss_d).backward()
+                if self.grad_clip_norm is not None:
+                    self.scaler.unscale_(self.optimizer_d)
+                    clip_grad_norm_(
+                        self.discriminator.parameters(), float(self.grad_clip_norm)
+                    )
+                self.scaler.step(self.optimizer_d)
+                self.scaler.update()
+            else:
+                loss_d.backward()
+                if self.grad_clip_norm is not None:
+                    clip_grad_norm_(
+                        self.discriminator.parameters(), float(self.grad_clip_norm)
+                    )
+                self.optimizer_d.step()
+            if self.scheduler_d is not None:
+                self.scheduler_d.step()
+            loss_d_values.append(loss_d.detach())
 
         self.optimizer_g.zero_grad(set_to_none=True)
         with self._autocast():
@@ -260,7 +263,7 @@ class Trainer:
         self.step += 1
         self.seen_images += int(hr.shape[0])
         logs = {name: float(value.detach().cpu()) for name, value in g_losses.items()}
-        logs["loss_d"] = float(loss_d.detach().cpu())
+        logs["loss_d"] = float(torch.stack(loss_d_values).mean().cpu())
         logs["lr_g"] = float(self.optimizer_g.param_groups[0]["lr"])
         logs["lr_d"] = float(self.optimizer_d.param_groups[0]["lr"])
         if self.log_every > 0 and self.step % self.log_every == 0:

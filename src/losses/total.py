@@ -64,6 +64,8 @@ def generator_losses(
     lr: torch.Tensor | None = None,
     generated_pyramid: Mapping[int | str, torch.Tensor] | None = None,
     hr_pyramid: Mapping[int | str, torch.Tensor] | None = None,
+    reconstruction_prediction: torch.Tensor | None = None,
+    reconstruction_target: torch.Tensor | None = None,
     perceptual_loss: torch.Tensor | Callable[[], torch.Tensor] | None = None,
     diffusion_loss: torch.Tensor | Callable[[], torch.Tensor] | None = None,
     weights: Mapping[str, float] | None = None,
@@ -115,6 +117,8 @@ def generator_losses(
         lr,
         generated_pyramid,
         hr_pyramid,
+        reconstruction_prediction,
+        reconstruction_target,
         perceptual_loss if isinstance(perceptual_loss, torch.Tensor) else None,
         diffusion_loss if isinstance(diffusion_loss, torch.Tensor) else None,
     )
@@ -124,11 +128,18 @@ def generator_losses(
     else:
         loss_adv = adversarial_generator_loss(real_scores, fake_scores) * lambda_adv
 
-    if lambda_pixel == 0.0 or sr is None or hr is None:
+    pixel_prediction = (
+        reconstruction_prediction if reconstruction_prediction is not None else sr
+    )
+    pixel_target = reconstruction_target if reconstruction_target is not None else hr
+    if lambda_pixel == 0.0 or pixel_prediction is None or pixel_target is None:
         loss_pixel = zero
     else:
         loss_pixel = (
-            reconstruction_loss(sr, hr, loss_type=pixel_loss_type) * lambda_pixel
+            reconstruction_loss(
+                pixel_prediction, pixel_target, loss_type=pixel_loss_type
+            )
+            * lambda_pixel
         )
 
     if (

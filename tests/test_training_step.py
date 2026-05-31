@@ -264,7 +264,9 @@ def test_discriminator_internal_type_error_is_not_swallowed(tmp_path):
         trainer.train_step(next(iter(_loader())))
 
 
-def test_training_step_passes_perceptual_loss_when_weight_is_positive(tmp_path, monkeypatch):
+def test_training_step_passes_perceptual_loss_when_weight_is_positive(
+    tmp_path, monkeypatch
+):
     class RecordingPerceptual(nn.Module):
         def __init__(self) -> None:
             super().__init__()
@@ -291,3 +293,93 @@ def test_training_step_passes_perceptual_loss_when_weight_is_positive(tmp_path, 
     assert perceptual_module.calls == 1
     assert logs["loss_perceptual"] > 0.0
 
+
+class ResidualGenerator(nn.Module):
+    def __init__(self, residual_value: float = 0.25) -> None:
+        super().__init__()
+        self.residual = nn.Parameter(torch.full((1, 3, 1, 1), residual_value))
+
+    def forward(self, lr: torch.Tensor, target_size) -> dict[str, object]:
+        baseline = torch.nn.functional.interpolate(
+            lr, size=target_size, mode="bicubic", align_corners=False
+        )
+        residual = self.residual.expand_as(baseline)
+        image = baseline + residual
+        return {
+            "image": image,
+            "baseline": baseline,
+            "residual": residual,
+            "pyramid": {1: image},
+        }
+
+
+def test_generator_forward_exposes_baseline_residual_and_image_identity(tmp_path):
+    trainer = Trainer(
+        ResidualGenerator(),
+        TinyDiscriminator(),
+        _loader(),
+        config=_config(tmp_path),
+        device="cpu",
+    )
+    batch = next(iter(_loader()))
+
+    generated = trainer._generator_forward(batch["lr"], batch["hr"])
+
+    assert set(generated) == {"image", "baseline", "residual", "pyramid"}
+    assert torch.allclose(
+        generated["image"], generated["baseline"] + generated["residual"]
+    )
+
+
+class ImageOnlyGenerator(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.net = nn.Conv2d(3, 3, kernel_size=1)
+
+    def forward(self, lr: torch.Tensor, target_size) -> dict[str, object]:
+        image = torch.nn.functional.interpolate(
+            lr, size=target_size, mode="bilinear", align_corners=False
+        )
+        return {"image": self.net(image)}
+
+
+def test_generator_forward_backfills_baseline_residual_for_image_only_mapping(
+    tmp_path,
+):
+    trainer = Trainer(
+        ImageOnlyGenerator(),
+        TinyDiscriminator(),
+        _loader(),
+        config=_config(tmp_path),
+        device="cpu",
+    )
+    batch = next(iter(_loader()))
+
+    generated = trainer._generator_forward(batch["lr"], batch["hr"])
+
+    assert torch.allclose(
+        generated["image"], generated["baseline"] + generated["residual"]
+    )
+    assert generated["pyramid"] == {}
+
+
+def test_residual_loss_matches_image_reconstruction_without_clamp(tmp_path):
+    config = _config(tmp_path)
+    config["loss"]["prediction_target"] = "residual"
+    config["loss"]["lambda_adv"] = 0.0
+    config["loss"]["lambda_multiscale"] = 0.0
+    config["loss"]["lambda_perceptual"] = 0.0
+    config["loss"]["lambda_consistency"] = 0.0
+    config["loss"]["lambda_diffusion"] = 0.0
+    trainer = Trainer(
+        ResidualGenerator(), TinyDiscriminator(), _loader(), config=config, device="cpu"
+    )
+
+    logs = trainer.train_step(next(iter(_loader())))
+
+    assert torch.isclose(
+        torch.tensor(logs["loss_residual"]), torch.tensor(logs["loss_pixel_image"])
+    )
+    assert torch.isclose(
+        torch.tensor(logs["loss_pixel"]), torch.tensor(logs["loss_residual"])
+    )

@@ -172,6 +172,10 @@ uv run python scripts/train.py \
   --resume runs/sr_64_to_256/checkpoints/latest.pt
 ```
 
+チェックポイントには、再開時に `range(next_epoch, training.epochs)` の開始位置として使う `next_epoch` が保存されます。
+`step_XXXXXXXX.pt` は学習ステップ途中で `training.save_every` ごとに保存される checkpoint で、`next_epoch` は現在処理中の epoch を指します。DataLoader の途中位置は保存しないため、この checkpoint から再開すると同じ epoch の先頭から再開します。
+一方、各 epoch 完了時に更新される `latest.pt` は完了済み epoch の次の epoch を `next_epoch` として保存します。たとえば epoch 0 が完了した `latest.pt` から再開した場合、epoch 0 は再実行せず epoch 1 から開始します。
+
 ### 小規模な動作確認例
 
 手元の画像や CPU で素早く確認したい場合は、一時的に設定ファイルをコピーして小さな値に変更します。

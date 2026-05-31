@@ -17,6 +17,8 @@ LOSS_KEYS = (
     "loss_total",
     "loss_adv",
     "loss_pixel",
+    "loss_image",
+    "loss_residual",
     "loss_multiscale",
     "loss_perceptual",
     "loss_consistency",
@@ -62,6 +64,8 @@ def generator_losses(
     sr: torch.Tensor | None = None,
     hr: torch.Tensor | None = None,
     lr: torch.Tensor | None = None,
+    baseline: torch.Tensor | None = None,
+    residual: torch.Tensor | None = None,
     generated_pyramid: Mapping[int | str, torch.Tensor] | None = None,
     hr_pyramid: Mapping[int | str, torch.Tensor] | None = None,
     perceptual_loss: torch.Tensor | Callable[[], torch.Tensor] | None = None,
@@ -80,6 +84,11 @@ def generator_losses(
     lambda_pixel = float(
         weights.get(
             "lambda_pixel", weights.get("lambda_pix", weights.get("pixel", 1.0))
+        )
+    )
+    lambda_residual = float(
+        weights.get(
+            "lambda_residual", weights.get("lambda_res", weights.get("residual", 1.0))
         )
     )
     lambda_multiscale = float(
@@ -113,6 +122,8 @@ def generator_losses(
         sr,
         hr,
         lr,
+        baseline,
+        residual,
         generated_pyramid,
         hr_pyramid,
         perceptual_loss if isinstance(perceptual_loss, torch.Tensor) else None,
@@ -129,6 +140,22 @@ def generator_losses(
     else:
         loss_pixel = (
             reconstruction_loss(sr, hr, loss_type=pixel_loss_type) * lambda_pixel
+        )
+
+    if lambda_residual == 0.0 or residual is None or baseline is None or hr is None:
+        loss_residual = zero
+    else:
+        residual_target = hr - baseline
+        if residual_target.shape[-2:] != residual.shape[-2:]:
+            residual_target = torch.nn.functional.interpolate(
+                residual_target,
+                size=residual.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            )
+        loss_residual = (
+            reconstruction_loss(residual, residual_target, loss_type=pixel_loss_type)
+            * lambda_residual
         )
 
     if (
@@ -166,6 +193,7 @@ def generator_losses(
     loss_total = (
         loss_adv
         + loss_pixel
+        + loss_residual
         + loss_multiscale
         + loss_perceptual
         + loss_consistency
@@ -176,6 +204,8 @@ def generator_losses(
         "loss_total": loss_total,
         "loss_adv": loss_adv,
         "loss_pixel": loss_pixel,
+        "loss_image": loss_pixel,
+        "loss_residual": loss_residual,
         "loss_multiscale": loss_multiscale,
         "loss_perceptual": loss_perceptual,
         "loss_consistency": loss_consistency,

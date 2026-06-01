@@ -7,7 +7,7 @@ import torch
 from PIL import Image
 from torch import nn
 
-from src.training.validation import _default_metrics, run_validation
+from src.training.validation import _default_metrics, run_validation, sample_grid_extras
 
 
 def test_default_metrics_exact_match_has_zero_mse_and_finite_psnr() -> None:
@@ -28,6 +28,34 @@ def test_default_metrics_denormalizes_before_known_mse_psnr() -> None:
 
     assert metrics["mse"] == pytest.approx(0.25)
     assert metrics["psnr"] == pytest.approx(6.020599913, rel=1e-6)
+
+
+def test_sample_grid_extras_extracts_residual_panels() -> None:
+    baseline = torch.zeros(1, 1, 2, 2)
+    residual = torch.full_like(baseline, 0.25)
+    hr = torch.ones_like(baseline)
+    sr = baseline + residual
+
+    extras = sample_grid_extras({"baseline": baseline, "residual": residual}, sr, hr)
+
+    assert extras["baseline"] is baseline
+    assert extras["pred_residual"] is residual
+    assert torch.equal(extras["target_residual"], hr - baseline)
+    assert torch.equal(extras["error_map"], (sr - hr).abs())
+
+
+def test_sample_grid_extras_returns_none_panels_without_residual_output() -> None:
+    hr = torch.ones(1, 1, 2, 2)
+    sr = torch.zeros_like(hr)
+
+    extras = sample_grid_extras({"image": sr}, sr, hr)
+
+    assert extras == {
+        "baseline": None,
+        "pred_residual": None,
+        "target_residual": None,
+        "error_map": None,
+    }
 
 
 class ResidualToyGenerator(nn.Module):

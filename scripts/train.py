@@ -6,7 +6,6 @@ import argparse
 import inspect
 import random
 import sys
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +22,7 @@ from src.models import ProgressiveSRGenerator, ResolutionAgnosticDiscriminator  
 from src.training.trainer import Trainer  # noqa: E402
 from src.utils.config import load_config  # noqa: E402
 from src.utils.random import seed_everything  # noqa: E402
+from src.utils.spatial import normalize_hw  # noqa: E402
 
 
 def _constructor_kwargs(cls, values: dict[str, Any]) -> dict[str, Any]:
@@ -30,28 +30,9 @@ def _constructor_kwargs(cls, values: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in values.items() if key in parameters}
 
 
-def _normalize_image_size(value: Any, key: str) -> tuple[int, int]:
-    if isinstance(value, int):
-        height = width = value
-    elif (
-        isinstance(value, Sequence)
-        and not isinstance(value, (str, bytes))
-        and len(value) == 2
-    ):
-        height, width = value
-    else:
-        raise ValueError(f"{key} must be an int or a 2-item [height, width] sequence")
-
-    height = int(height)
-    width = int(width)
-    if height <= 0 or width <= 0:
-        raise ValueError(f"{key} dimensions must be positive, got {value!r}")
-    return height, width
-
-
 def _expected_downsample_scale(data_cfg: dict[str, Any]) -> float:
-    hr_h, hr_w = _normalize_image_size(data_cfg["image_size_hr"], "data.image_size_hr")
-    lr_h, lr_w = _normalize_image_size(data_cfg["image_size_lr"], "data.image_size_lr")
+    hr_h, hr_w = normalize_hw(data_cfg["image_size_hr"], name="data.image_size_hr")
+    lr_h, lr_w = normalize_hw(data_cfg["image_size_lr"], name="data.image_size_lr")
     scale_h = hr_h / lr_h
     scale_w = hr_w / lr_w
     if not np.isclose(scale_h, scale_w):
@@ -65,9 +46,7 @@ def _expected_downsample_scale(data_cfg: dict[str, Any]) -> float:
 
 def _degradation_config(config: dict[str, Any]) -> dict[str, Any]:
     data_cfg = config["data"]
-    image_size_lr = _normalize_image_size(
-        data_cfg["image_size_lr"], "data.image_size_lr"
-    )
+    image_size_lr = normalize_hw(data_cfg["image_size_lr"], name="data.image_size_lr")
 
     degradation = dict(config.get("degradation", {}))
     downsample = degradation.pop("downsample", {})
@@ -152,8 +131,12 @@ def build_dataloaders(config: dict[str, Any]) -> tuple[DataLoader, DataLoader | 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the super-resolution GAN.")
-    parser.add_argument("--config", required=True, help="Path to a YAML training config.")
-    parser.add_argument("--resume", default=None, help="Optional checkpoint path to resume from.")
+    parser.add_argument(
+        "--config", required=True, help="Path to a YAML training config."
+    )
+    parser.add_argument(
+        "--resume", default=None, help="Optional checkpoint path to resume from."
+    )
     return parser.parse_args()
 
 
@@ -162,8 +145,17 @@ def main() -> None:
     config = load_config(args.config, default_path="configs/default.yaml")
     seed_everything(int(config.get("seed", 0)))
 
-    generator = ProgressiveSRGenerator(**_constructor_kwargs(ProgressiveSRGenerator, config.get("model", {}).get("generator", {})))
-    discriminator = ResolutionAgnosticDiscriminator(**_constructor_kwargs(ResolutionAgnosticDiscriminator, config.get("model", {}).get("discriminator", {})))
+    generator = ProgressiveSRGenerator(
+        **_constructor_kwargs(
+            ProgressiveSRGenerator, config.get("model", {}).get("generator", {})
+        )
+    )
+    discriminator = ResolutionAgnosticDiscriminator(
+        **_constructor_kwargs(
+            ResolutionAgnosticDiscriminator,
+            config.get("model", {}).get("discriminator", {}),
+        )
+    )
     train_loader, val_loader = build_dataloaders(config)
     trainer = Trainer(generator, discriminator, train_loader, val_loader, config=config)
     if args.resume:

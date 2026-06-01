@@ -10,6 +10,8 @@ import numpy as np
 import torch
 from PIL import Image
 
+from src.utils.spatial import normalize_hw
+
 NumberPair: TypeAlias = tuple[int, int]
 
 
@@ -52,17 +54,6 @@ def denormalize_minus_one_to_one(tensor: torch.Tensor) -> torch.Tensor:
     return tensor.add(1.0).div(2.0)
 
 
-def _as_hw(size: int | Sequence[int]) -> NumberPair:
-    if isinstance(size, int):
-        return size, size
-    if len(size) != 2:
-        raise ValueError(f"size must contain 2 values, got {size!r}")
-    height, width = int(size[0]), int(size[1])
-    if height <= 0 or width <= 0:
-        raise ValueError(f"crop size must be positive, got {(height, width)!r}")
-    return height, width
-
-
 def _spatial_size(image: Image.Image | torch.Tensor) -> NumberPair:
     if isinstance(image, Image.Image):
         width, height = image.size
@@ -90,7 +81,7 @@ def random_crop(
     rng: random.Random | None = None,
 ) -> Image.Image | torch.Tensor:
     """Crop a random spatial window from a PIL image or tensor."""
-    crop_h, crop_w = _as_hw(size)
+    crop_h, crop_w = normalize_hw(size, name="crop size")
     image_h, image_w = _spatial_size(image)
     if crop_h > image_h or crop_w > image_w:
         raise ValueError(
@@ -107,7 +98,7 @@ def center_crop(
     image: Image.Image | torch.Tensor, size: int | Sequence[int]
 ) -> Image.Image | torch.Tensor:
     """Crop the centered spatial window from a PIL image or tensor."""
-    crop_h, crop_w = _as_hw(size)
+    crop_h, crop_w = normalize_hw(size, name="crop size")
     image_h, image_w = _spatial_size(image)
     if crop_h > image_h or crop_w > image_w:
         raise ValueError(

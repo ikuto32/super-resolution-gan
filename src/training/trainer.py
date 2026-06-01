@@ -29,7 +29,7 @@ from src.training.ema import EMAGenerator
 from src.training.logging import TrainingLogger
 from src.training.optimizers import build_optimizers
 from src.training.validation import _make_sample_grid as build_sample_grid
-from src.training.validation import run_validation
+from src.training.validation import run_validation, sample_grid_extras
 from src.utils.config import mapping_section
 from src.utils.tensors import batch_to_device
 from datasets.transforms import tensor_to_pil
@@ -495,20 +495,15 @@ class Trainer:
         hr: torch.Tensor,
         output: Mapping[str, Any] | None = None,
     ) -> torch.Tensor:
-        baseline = pred_residual = target_residual = error_map = None
-        if output is not None and "baseline" in output and "residual" in output:
-            baseline = output["baseline"]
-            pred_residual = output["residual"]
-            target_residual = hr - baseline
-            error_map = (sr - hr).abs()
+        extras = sample_grid_extras(output, sr, hr)
         return build_sample_grid(
             lr,
             sr,
             hr,
-            baseline=baseline,
-            pred_residual=pred_residual,
-            target_residual=target_residual,
-            error_map=error_map,
+            baseline=extras["baseline"],
+            pred_residual=extras["pred_residual"],
+            target_residual=extras["target_residual"],
+            error_map=extras["error_map"],
             max_images=self.sample_max_images,
         )
 

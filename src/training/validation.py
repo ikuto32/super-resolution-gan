@@ -77,6 +77,37 @@ def _normalize_magnitude_for_display(
     return magnitude.div(max_value).clamp(0.0, 1.0)
 
 
+def sample_grid_extras(
+    output: Any, sr: torch.Tensor, hr: torch.Tensor
+) -> dict[str, torch.Tensor | None]:
+    """Return optional residual-panel tensors for sample grid rendering.
+
+    Generators that expose both a baseline image and predicted residual can
+    display extra diagnostic panels: baseline, predicted residual, target
+    residual, and absolute SR error. Non-residual outputs intentionally return
+    ``None`` for every panel so callers can fall back to the standard LR/SR/HR
+    grid.
+    """
+    extras: dict[str, torch.Tensor | None] = {
+        "baseline": None,
+        "pred_residual": None,
+        "target_residual": None,
+        "error_map": None,
+    }
+    if not (
+        isinstance(output, Mapping) and "baseline" in output and "residual" in output
+    ):
+        return extras
+
+    baseline = output["baseline"]
+    pred_residual = output["residual"]
+    extras["baseline"] = baseline
+    extras["pred_residual"] = pred_residual
+    extras["target_residual"] = hr - baseline
+    extras["error_map"] = (sr - hr).abs()
+    return extras
+
+
 def _make_sample_grid(
     lr: torch.Tensor,
     sr: torch.Tensor,
@@ -176,16 +207,7 @@ def run_validation(
         hr = batch["hr"]
         output = generator(lr, target_size=hr.shape[-2:])
         sr = output["image"] if isinstance(output, Mapping) else output
-        baseline = pred_residual = target_residual = error_map = None
-        if (
-            isinstance(output, Mapping)
-            and "baseline" in output
-            and "residual" in output
-        ):
-            baseline = output["baseline"]
-            pred_residual = output["residual"]
-            target_residual = hr - baseline
-            error_map = (sr - hr).abs()
+        extras = sample_grid_extras(output, sr, hr)
 
         current = _default_metrics(sr, hr)
         if metrics:
@@ -206,10 +228,10 @@ def run_validation(
                 sr,
                 hr,
                 Path(output_dir) / "validation" / f"step_{int(step):08d}.png",
-                baseline=baseline,
-                pred_residual=pred_residual,
-                target_residual=target_residual,
-                error_map=error_map,
+                baseline=extras["baseline"],
+                pred_residual=extras["pred_residual"],
+                target_residual=extras["target_residual"],
+                error_map=extras["error_map"],
             )
 
     if was_training:
@@ -219,4 +241,4 @@ def run_validation(
     return {name: value / count for name, value in totals.items()}
 
 
-__all__ = ["MetricFn", "run_validation"]
+__all__ = ["MetricFn", "run_validation", "sample_grid_extras"]

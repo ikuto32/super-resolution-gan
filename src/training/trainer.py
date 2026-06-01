@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch.nn.utils import clip_grad_norm_
 from tqdm import tqdm
@@ -29,6 +30,7 @@ from src.training.logging import TrainingLogger
 from src.training.optimizers import build_optimizers
 from src.training.validation import _make_sample_grid as build_sample_grid
 from src.training.validation import run_validation
+from src.utils.tensors import batch_to_device
 from datasets.transforms import tensor_to_pil
 
 
@@ -79,21 +81,6 @@ def _interpret_diffusion_prediction(
             "degradation state to expose both G_t x0 and G_{t-1} x0"
         )
     raise ValueError(f"unsupported diffusion prediction_type: {prediction_type!r}")
-
-
-def _batch_to_device(batch: Mapping[str, Any], device: torch.device) -> dict[str, Any]:
-    moved: dict[str, Any] = {}
-    for key, value in batch.items():
-        if isinstance(value, torch.Tensor):
-            moved[key] = value.to(device)
-        elif isinstance(value, Mapping):
-            moved[key] = {
-                k: v.to(device) if isinstance(v, torch.Tensor) else v
-                for k, v in value.items()
-            }
-        else:
-            moved[key] = value
-    return moved
 
 
 class Trainer:
@@ -341,7 +328,7 @@ class Trainer:
         """Run ``n_critic`` discriminator updates and one generator update."""
         self.generator.train()
         self.discriminator.train()
-        batch = _batch_to_device(batch, self.device)
+        batch = batch_to_device(batch, self.device)
         lr = batch["lr"]
         hr = batch["hr"]
         hr_pyramid = batch.get("hr_pyramid")
@@ -414,9 +401,7 @@ class Trainer:
             target_residual = hr - baseline
             pixel_loss_type = str(self.loss_config.get("pixel_loss_type", "l1"))
 
-            loss_pixel_image = reconstruction_loss(
-                fake, hr, loss_type=pixel_loss_type
-            )
+            loss_pixel_image = reconstruction_loss(fake, hr, loss_type=pixel_loss_type)
             loss_residual = reconstruction_loss(
                 pred_residual, target_residual, loss_type=pixel_loss_type
             )

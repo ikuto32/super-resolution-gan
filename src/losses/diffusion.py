@@ -8,6 +8,8 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
+from src.utils.spatial import normalize_hw
+
 
 _DEFAULT_SCHEDULE = "linear"
 _SUPPORTED_PREDICTION_TYPES = {"x0", "final_residual", "step_residual"}
@@ -88,17 +90,6 @@ def timestep_weights(
     return min_strength + (max_strength - min_strength) * weight
 
 
-def _normalize_size(size: int | tuple[int, int] | list[int]) -> tuple[int, int]:
-    if isinstance(size, int):
-        return (size, size)
-    if len(size) != 2:
-        raise ValueError(f"size must have two elements, got {size!r}")
-    height, width = int(size[0]), int(size[1])
-    if height < 1 or width < 1:
-        raise ValueError(f"size values must be positive, got {size!r}")
-    return height, width
-
-
 def degraded_noisy_state(
     x_b: torch.Tensor,
     timesteps: torch.Tensor | None = None,
@@ -136,7 +127,7 @@ def degraded_noisy_state(
         )
 
     if isinstance(downscale, (tuple, list)):
-        degraded_size = _normalize_size(downscale)
+        degraded_size = normalize_hw(downscale)
     else:
         scale = float(downscale)
         if scale <= 0:

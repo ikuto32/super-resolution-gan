@@ -10,6 +10,8 @@ import torch.nn.functional as F
 from torch import nn
 from torchvision.models import VGG16_Weights, vgg16
 
+from src.utils.config import mapping_section
+
 
 VGG16_LAYER_INDICES: dict[str, int] = {
     "relu1_1": 2,
@@ -122,10 +124,7 @@ class VGGPerceptualLoss(nn.Module):
 
 def build_perceptual_loss(config: Mapping[str, Any] | None = None) -> nn.Module:
     """Build a perceptual loss module from a loss config mapping."""
-    config = config or {}
-    perceptual_cfg = config.get("perceptual", {})
-    if not isinstance(perceptual_cfg, Mapping):
-        perceptual_cfg = {}
+    perceptual_cfg = mapping_section(config, "perceptual")
     loss_type_name = str(perceptual_cfg.get("type", "vgg")).lower()
     if loss_type_name != "vgg":
         raise ValueError("only VGG perceptual loss is currently implemented")

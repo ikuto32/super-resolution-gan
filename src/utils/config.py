@@ -88,6 +88,24 @@ def get_nested(config: Mapping[str, Any], key_path: str) -> Any:
     return current
 
 
+def mapping_section(
+    config: Mapping[str, Any] | None,
+    key: str,
+    default: Mapping[str, Any] | None = None,
+) -> ConfigDict:
+    """Return a config subsection as a plain dictionary.
+
+    Missing sections use ``default`` when it is a mapping, otherwise an empty
+    dictionary. Non-mapping section values are treated as empty dictionaries so
+    callers can safely chain ``.get(...)`` calls. For nested sections, pass the
+    result of :func:`get_nested` as ``config`` or ``default``.
+    """
+
+    fallback: Mapping[str, Any] = default or {}
+    value: Any = config.get(key, fallback) if isinstance(config, Mapping) else fallback
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
 def validate_required_keys(
     config: Mapping[str, Any],
     required_keys: Sequence[str] = DEFAULT_REQUIRED_KEYS,

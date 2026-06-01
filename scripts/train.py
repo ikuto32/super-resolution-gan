@@ -87,45 +87,57 @@ def _data_loader_generator(seed: int) -> torch.Generator:
     return torch.Generator().manual_seed(int(seed))
 
 
-def build_dataloaders(config: dict[str, Any]) -> tuple[DataLoader, DataLoader | None]:
-    data_cfg = config["data"]
-    seed = int(config.get("seed", 0))
-    train_dataset = ImagePairDataset(
-        data_cfg["train_dir"],
+def _build_dataset(
+    data_cfg: dict[str, Any],
+    config: dict[str, Any],
+    path: str | Path,
+    *,
+    validation: bool,
+    seed: int,
+) -> ImagePairDataset:
+    return ImagePairDataset(
+        path,
         crop_size=data_cfg.get("image_size_hr"),
         degradation=_degradation_config(config),
-        validation=False,
+        validation=validation,
         seed=seed,
     )
-    train_loader = DataLoader(
-        train_dataset,
+
+
+def _build_loader(
+    dataset: ImagePairDataset,
+    data_cfg: dict[str, Any],
+    *,
+    shuffle: bool,
+    seed: int,
+) -> DataLoader:
+    return DataLoader(
+        dataset,
         batch_size=int(data_cfg.get("batch_size", 1)),
-        shuffle=True,
+        shuffle=shuffle,
         num_workers=int(data_cfg.get("num_workers", 0)),
         pin_memory=True,
         worker_init_fn=_seed_worker,
         generator=_data_loader_generator(seed),
     )
 
+
+def build_dataloaders(config: dict[str, Any]) -> tuple[DataLoader, DataLoader | None]:
+    data_cfg = config["data"]
+    seed = int(config.get("seed", 0))
+
+    train_dataset = _build_dataset(
+        data_cfg, config, data_cfg["train_dir"], validation=False, seed=seed
+    )
+    train_loader = _build_loader(train_dataset, data_cfg, shuffle=True, seed=seed)
+
     val_loader = None
     val_dir = data_cfg.get("val_dir")
     if val_dir and Path(val_dir).exists():
-        val_dataset = ImagePairDataset(
-            val_dir,
-            crop_size=data_cfg.get("image_size_hr"),
-            degradation=_degradation_config(config),
-            validation=True,
-            seed=seed,
+        val_dataset = _build_dataset(
+            data_cfg, config, val_dir, validation=True, seed=seed
         )
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=int(data_cfg.get("batch_size", 1)),
-            shuffle=False,
-            num_workers=int(data_cfg.get("num_workers", 0)),
-            pin_memory=True,
-            worker_init_fn=_seed_worker,
-            generator=_data_loader_generator(seed),
-        )
+        val_loader = _build_loader(val_dataset, data_cfg, shuffle=False, seed=seed)
     return train_loader, val_loader
 
 

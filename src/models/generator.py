@@ -10,6 +10,7 @@ import torch.nn.functional as F
 
 from src.models.condition_encoder import ConditionEncoder
 from src.models.progressive_blocks import ProgressiveUpsampleBlock
+from src.utils.spatial import normalize_hw
 
 
 class ProgressiveSRGenerator(nn.Module):
@@ -50,16 +51,6 @@ class ProgressiveSRGenerator(nn.Module):
             condition_type=condition_type,
             num_res_blocks=num_res_blocks_per_stage,
         )
-
-    @staticmethod
-    def _normalize_target_size(
-        target_size: int | tuple[int, int] | list[int],
-    ) -> tuple[int, int]:
-        if isinstance(target_size, int):
-            return (target_size, target_size)
-        if len(target_size) != 2:
-            raise ValueError(f"target_size must have two elements, got {target_size!r}")
-        return (int(target_size[0]), int(target_size[1]))
 
     @staticmethod
     def _progressive_sizes(
@@ -105,7 +96,7 @@ class ProgressiveSRGenerator(nn.Module):
     ) -> dict[str, torch.Tensor | dict[int, torch.Tensor] | list[torch.Tensor]]:
         if lr.ndim != 4:
             raise ValueError(f"expected lr to be BCHW, got shape {tuple(lr.shape)}")
-        target_hw = self._normalize_target_size(target_size)
+        target_hw = normalize_hw(target_size, name="target_size")
         should_return_intermediates = (
             self.return_intermediates
             if return_intermediates is None

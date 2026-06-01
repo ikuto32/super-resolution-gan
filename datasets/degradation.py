@@ -13,6 +13,7 @@ import torch.nn.functional as F
 from PIL import Image, ImageFilter
 
 from datasets.transforms import pil_to_tensor, tensor_to_pil
+from src.utils.spatial import normalize_hw
 
 
 @dataclass(frozen=True)
@@ -35,7 +36,11 @@ class DegradationPipeline:
             target_size = self.config.get("target_size")
         else:
             target_size = self.target_size
-        object.__setattr__(self, "target_size", _normalize_target_size(target_size))
+        object.__setattr__(
+            self,
+            "target_size",
+            normalize_hw(target_size, name="target_size", allow_none=True),
+        )
 
     def __call__(
         self,
@@ -144,9 +149,7 @@ class DegradationPipeline:
             if key in spec:
                 value = spec[key]
             elif f"{key}_min" in spec and f"{key}_max" in spec:
-                return rng.uniform(
-                    float(spec[f"{key}_min"]), float(spec[f"{key}_max"])
-                )
+                return rng.uniform(float(spec[f"{key}_min"]), float(spec[f"{key}_max"]))
             else:
                 value = default
         elif isinstance(spec, (int, float)):
@@ -158,22 +161,3 @@ class DegradationPipeline:
                 raise ValueError(f"range for {key!r} must have 2 values, got {value!r}")
             return rng.uniform(float(value[0]), float(value[1]))
         return float(value)
-
-
-def _normalize_target_size(value: Any) -> tuple[int, int] | None:
-    if value is None:
-        return None
-    if isinstance(value, int):
-        height = width = value
-    elif isinstance(value, (list, tuple)) and len(value) == 2:
-        height, width = value
-    else:
-        raise ValueError(
-            "target_size must be an int or a 2-item (height, width) sequence, "
-            f"got {value!r}"
-        )
-    height = int(height)
-    width = int(width)
-    if height <= 0 or width <= 0:
-        raise ValueError(f"target_size dimensions must be positive, got {value!r}")
-    return height, width

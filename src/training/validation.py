@@ -11,23 +11,9 @@ import torch.nn.functional as F
 from torch import nn
 
 from datasets.transforms import denormalize_minus_one_to_one, tensor_to_pil
+from src.utils.tensors import batch_to_device
 
 MetricFn = Callable[[torch.Tensor, torch.Tensor], torch.Tensor | float]
-
-
-def _batch_to_device(batch: Mapping[str, Any], device: torch.device) -> dict[str, Any]:
-    moved: dict[str, Any] = {}
-    for key, value in batch.items():
-        if isinstance(value, torch.Tensor):
-            moved[key] = value.to(device)
-        elif isinstance(value, Mapping):
-            moved[key] = {
-                k: v.to(device) if isinstance(v, torch.Tensor) else v
-                for k, v in value.items()
-            }
-        else:
-            moved[key] = value
-    return moved
 
 
 def _default_metrics(sr: torch.Tensor, hr: torch.Tensor) -> dict[str, float]:
@@ -185,7 +171,7 @@ def run_validation(
     for batch_index, batch in enumerate(dataloader):
         if max_batches is not None and batch_index >= max_batches:
             break
-        batch = _batch_to_device(batch, device)
+        batch = batch_to_device(batch, device)
         lr = batch["lr"]
         hr = batch["hr"]
         output = generator(lr, target_size=hr.shape[-2:])

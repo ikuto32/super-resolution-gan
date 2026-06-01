@@ -23,6 +23,28 @@ LOSS_KEYS = (
     "loss_diffusion",
 )
 
+LOSS_WEIGHT_ALIASES = {
+    "adv": ("lambda_adv", "adv", 1.0),
+    "pixel": ("lambda_pixel", "lambda_pix", "pixel", 1.0),
+    "multiscale": ("lambda_multiscale", "lambda_ms", "multiscale", 0.0),
+    "perceptual": ("lambda_perceptual", "lambda_perc", "perceptual", 0.0),
+    "consistency": ("lambda_consistency", "lambda_cons", "consistency", 0.0),
+    "diffusion": ("lambda_diffusion", "lambda_diff", "diffusion", 0.0),
+}
+
+
+def _weight(weights: Mapping[str, float], name: str) -> float:
+    *aliases, default = LOSS_WEIGHT_ALIASES[name]
+    for alias in aliases:
+        if alias in weights:
+            return float(weights[alias])
+    return float(default)
+
+
+def _loss_weights(weights: Mapping[str, float] | None) -> dict[str, float]:
+    weights = weights or {}
+    return {name: _weight(weights, name) for name in LOSS_WEIGHT_ALIASES}
+
 
 def _first_tensor(*values: object) -> torch.Tensor | None:
     for value in values:
@@ -55,6 +77,18 @@ def _as_scalar_loss(
     return value.mean() if value.ndim > 0 else value
 
 
+def _weighted_optional_loss(
+    *,
+    weight: float,
+    zero: torch.Tensor,
+    missing: bool,
+    loss: torch.Tensor | Callable[[], torch.Tensor] | None,
+) -> torch.Tensor:
+    if weight == 0.0 or missing:
+        return zero
+    return _as_scalar_loss(loss, zero) * weight
+
+
 def generator_losses(
     *,
     fake_scores: torch.Tensor | None = None,
@@ -77,37 +111,13 @@ def generator_losses(
     Optional terms are represented by scalar zero tensors whenever their weight is
     zero or the inputs needed to compute them are not provided.
     """
-    weights = weights or {}
-    lambda_adv = float(weights.get("lambda_adv", weights.get("adv", 1.0)))
-    lambda_pixel = float(
-        weights.get(
-            "lambda_pixel", weights.get("lambda_pix", weights.get("pixel", 1.0))
-        )
-    )
-    lambda_multiscale = float(
-        weights.get(
-            "lambda_multiscale",
-            weights.get("lambda_ms", weights.get("multiscale", 0.0)),
-        )
-    )
-    lambda_perceptual = float(
-        weights.get(
-            "lambda_perceptual",
-            weights.get("lambda_perc", weights.get("perceptual", 0.0)),
-        )
-    )
-    lambda_consistency = float(
-        weights.get(
-            "lambda_consistency",
-            weights.get("lambda_cons", weights.get("consistency", 0.0)),
-        )
-    )
-    lambda_diffusion = float(
-        weights.get(
-            "lambda_diffusion",
-            weights.get("lambda_diff", weights.get("diffusion", 0.0)),
-        )
-    )
+    loss_weights = _loss_weights(weights)
+    lambda_adv = loss_weights["adv"]
+    lambda_pixel = loss_weights["pixel"]
+    lambda_multiscale = loss_weights["multiscale"]
+    lambda_perceptual = loss_weights["perceptual"]
+    lambda_consistency = loss_weights["consistency"]
+    lambda_diffusion = loss_weights["diffusion"]
 
     zero = _zero_like_reference(
         fake_scores,
@@ -123,56 +133,61 @@ def generator_losses(
         diffusion_loss if isinstance(diffusion_loss, torch.Tensor) else None,
     )
 
-    if lambda_adv == 0.0 or fake_scores is None:
-        loss_adv = zero
-    else:
-        loss_adv = adversarial_generator_loss(real_scores, fake_scores) * lambda_adv
+    loss_adv = _weighted_optional_loss(
+        weight=lambda_adv,
+        zero=zero,
+        missing=fake_scores is None,
+        loss=lambda: adversarial_generator_loss(real_scores, fake_scores),
+    )
 
     pixel_prediction = (
         reconstruction_prediction if reconstruction_prediction is not None else sr
     )
     pixel_target = reconstruction_target if reconstruction_target is not None else hr
-    if lambda_pixel == 0.0 or pixel_prediction is None or pixel_target is None:
-        loss_pixel = zero
-    else:
-        loss_pixel = (
-            reconstruction_loss(
-                pixel_prediction, pixel_target, loss_type=pixel_loss_type
-            )
-            * lambda_pixel
-        )
+    loss_pixel = _weighted_optional_loss(
+        weight=lambda_pixel,
+        zero=zero,
+        missing=pixel_prediction is None or pixel_target is None,
+        loss=lambda: reconstruction_loss(
+            pixel_prediction, pixel_target, loss_type=pixel_loss_type
+        ),
+    )
 
-    if (
-        lambda_multiscale == 0.0
-        or generated_pyramid is None
-        or hr_pyramid is None
-        or not generated_pyramid
-        or not hr_pyramid
-    ):
-        loss_multiscale = zero
-    else:
-        loss_multiscale = multi_scale_reconstruction_loss(
+    loss_multiscale = _weighted_optional_loss(
+        weight=lambda_multiscale,
+        zero=zero,
+        missing=(
+            generated_pyramid is None
+            or hr_pyramid is None
+            or not generated_pyramid
+            or not hr_pyramid
+        ),
+        loss=lambda: multi_scale_reconstruction_loss(
             dict(generated_pyramid),
             dict(hr_pyramid),
-            weight=lambda_multiscale,
-        )
+        ),
+    )
 
-    if lambda_perceptual == 0.0 or perceptual_loss is None:
-        loss_perceptual = zero
-    else:
-        loss_perceptual = _as_scalar_loss(perceptual_loss, zero) * lambda_perceptual
+    loss_perceptual = _weighted_optional_loss(
+        weight=lambda_perceptual,
+        zero=zero,
+        missing=perceptual_loss is None,
+        loss=perceptual_loss,
+    )
 
-    if lambda_consistency == 0.0 or sr is None or lr is None:
-        loss_consistency = zero
-    else:
-        loss_consistency = (
-            lr_consistency_loss(sr, lr, mode=consistency_mode) * lambda_consistency
-        )
+    loss_consistency = _weighted_optional_loss(
+        weight=lambda_consistency,
+        zero=zero,
+        missing=sr is None or lr is None,
+        loss=lambda: lr_consistency_loss(sr, lr, mode=consistency_mode),
+    )
 
-    if lambda_diffusion == 0.0 or diffusion_loss is None:
-        loss_diffusion = zero
-    else:
-        loss_diffusion = _as_scalar_loss(diffusion_loss, zero) * lambda_diffusion
+    loss_diffusion = _weighted_optional_loss(
+        weight=lambda_diffusion,
+        zero=zero,
+        missing=diffusion_loss is None,
+        loss=diffusion_loss,
+    )
 
     loss_total = (
         loss_adv

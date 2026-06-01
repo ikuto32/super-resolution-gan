@@ -8,6 +8,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
+from src.utils.config import mapping_section
 from src.utils.spatial import normalize_hw
 
 
@@ -38,10 +39,7 @@ def _as_float(config: Mapping[str, Any], key: str, default: float) -> float:
 
 
 def _diffusion_section(config: Mapping[str, Any] | None) -> Mapping[str, Any]:
-    if not isinstance(config, Mapping):
-        return {}
-    diffusion = config.get("diffusion", config)
-    return diffusion if isinstance(diffusion, Mapping) else {}
+    return mapping_section(config, "diffusion", default=config)
 
 
 def sample_timesteps(
@@ -184,15 +182,9 @@ def degraded_noisy_state_from_config(
 ) -> dict[str, torch.Tensor]:
     """Create ``x_t`` using a config mapping with a ``diffusion`` section."""
     diffusion = _diffusion_section(config)
-    sampling = diffusion.get("timestep_sampling", {})
-    if not isinstance(sampling, Mapping):
-        sampling = {}
-    noise_cfg = diffusion.get("noise", {})
-    if not isinstance(noise_cfg, Mapping):
-        noise_cfg = {}
-    degradation_cfg = diffusion.get("degradation", {})
-    if not isinstance(degradation_cfg, Mapping):
-        degradation_cfg = {}
+    sampling = mapping_section(diffusion, "timestep_sampling")
+    noise_cfg = mapping_section(diffusion, "noise")
+    degradation_cfg = mapping_section(diffusion, "degradation")
 
     prediction_type = diffusion_prediction_type(diffusion)
     if prediction_type == "step_residual":

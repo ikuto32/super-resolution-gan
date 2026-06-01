@@ -206,6 +206,25 @@ class Trainer:
             return torch.amp.autocast(device_type=self.device.type)
         return nullcontext()
 
+    def _backward_and_step(
+        self,
+        loss: torch.Tensor,
+        optimizer: torch.optim.Optimizer,
+        module: nn.Module,
+    ) -> None:
+        if self.scaler is not None:
+            self.scaler.scale(loss).backward()
+            if self.grad_clip_norm is not None:
+                self.scaler.unscale_(optimizer)
+                clip_grad_norm_(module.parameters(), float(self.grad_clip_norm))
+            self.scaler.step(optimizer)
+            self.scaler.update()
+        else:
+            loss.backward()
+            if self.grad_clip_norm is not None:
+                clip_grad_norm_(module.parameters(), float(self.grad_clip_norm))
+            optimizer.step()
+
     def _discriminator_uses_condition(self) -> bool:
         if isinstance(self.discriminator, ResolutionAgnosticDiscriminator):
             return bool(self.discriminator.conditional)
@@ -359,22 +378,7 @@ class Trainer:
                     loss_d = loss_d + r2_regularization(
                         fake_scores, fake_for_d
                     ) * float(self.loss_config.get("lambda_r2", 0.0))
-            if self.scaler is not None:
-                self.scaler.scale(loss_d).backward()
-                if self.grad_clip_norm is not None:
-                    self.scaler.unscale_(self.optimizer_d)
-                    clip_grad_norm_(
-                        self.discriminator.parameters(), float(self.grad_clip_norm)
-                    )
-                self.scaler.step(self.optimizer_d)
-                self.scaler.update()
-            else:
-                loss_d.backward()
-                if self.grad_clip_norm is not None:
-                    clip_grad_norm_(
-                        self.discriminator.parameters(), float(self.grad_clip_norm)
-                    )
-                self.optimizer_d.step()
+            self._backward_and_step(loss_d, self.optimizer_d, self.discriminator)
             if self.scheduler_d is not None:
                 self.scheduler_d.step()
             loss_d_values.append(loss_d.detach())
@@ -471,18 +475,7 @@ class Trainer:
             g_losses["loss_pixel_image"] = loss_pixel_image * lambda_pixel
             g_losses["loss_residual"] = loss_residual * lambda_pixel
             loss_g = g_losses["loss_total"]
-        if self.scaler is not None:
-            self.scaler.scale(loss_g).backward()
-            if self.grad_clip_norm is not None:
-                self.scaler.unscale_(self.optimizer_g)
-                clip_grad_norm_(self.generator.parameters(), float(self.grad_clip_norm))
-            self.scaler.step(self.optimizer_g)
-            self.scaler.update()
-        else:
-            loss_g.backward()
-            if self.grad_clip_norm is not None:
-                clip_grad_norm_(self.generator.parameters(), float(self.grad_clip_norm))
-            self.optimizer_g.step()
+        self._backward_and_step(loss_g, self.optimizer_g, self.generator)
         if self.scheduler_g is not None:
             self.scheduler_g.step()
         if self.ema is not None:

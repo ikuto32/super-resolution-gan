@@ -30,6 +30,7 @@ from src.training.logging import TrainingLogger
 from src.training.optimizers import build_optimizers
 from src.training.validation import _make_sample_grid as build_sample_grid
 from src.training.validation import run_validation
+from src.utils.config import mapping_section
 from src.utils.tensors import batch_to_device
 from datasets.transforms import tensor_to_pil
 
@@ -118,16 +119,8 @@ class Trainer:
         self.scheduler_g = scheduler_g
         self.scheduler_d = scheduler_d
 
-        training_cfg = (
-            self.config.get("training", {})
-            if isinstance(self.config.get("training", {}), Mapping)
-            else {}
-        )
-        ema_cfg = (
-            training_cfg.get("ema", {})
-            if isinstance(training_cfg.get("ema", {}), Mapping)
-            else {}
-        )
+        training_cfg = mapping_section(self.config, "training")
+        ema_cfg = mapping_section(training_cfg, "ema")
         self.ema = generator_ema
         if self.ema is None and bool(ema_cfg.get("enabled", False)):
             self.ema = EMAGenerator(
@@ -136,27 +129,15 @@ class Trainer:
                 device=self.device,
             )
 
-        project_cfg = (
-            self.config.get("project", {})
-            if isinstance(self.config.get("project", {}), Mapping)
-            else {}
-        )
-        logging_cfg = (
-            self.config.get("logging", {})
-            if isinstance(self.config.get("logging", {}), Mapping)
-            else {}
-        )
+        project_cfg = mapping_section(self.config, "project")
+        logging_cfg = mapping_section(self.config, "logging")
         output_dir = Path(project_cfg.get("output_dir", "runs/default"))
         self.output_dir = output_dir
         self.checkpoint_dir = output_dir / "checkpoints"
         self.logger = logger or TrainingLogger(
             output_dir / "logs",
             enable_tensorboard=bool(logging_cfg.get("tensorboard", True)),
-            wandb_config=(
-                logging_cfg.get("wandb", {})
-                if isinstance(logging_cfg.get("wandb", {}), Mapping)
-                else {}
-            ),
+            wandb_config=mapping_section(logging_cfg, "wandb"),
             run_config=self.config,
         )
         self.mixed_precision = (
@@ -175,11 +156,7 @@ class Trainer:
         )
         self.sample_max_images = int(training_cfg.get("sample_max_images", 4))
         self.sample_dir = output_dir / str(training_cfg.get("sample_dir", "samples"))
-        self.loss_config = (
-            self.config.get("loss", {})
-            if isinstance(self.config.get("loss", {}), Mapping)
-            else {}
-        )
+        self.loss_config = mapping_section(self.config, "loss")
         self.prediction_target = str(
             self.loss_config.get("prediction_target", "image")
         ).lower()
@@ -431,9 +408,7 @@ class Trainer:
                     diffusion_state["x_t"],
                     diffusion_state["timesteps"],
                 )
-                diffusion_cfg = self.loss_config.get("diffusion", {})
-                if not isinstance(diffusion_cfg, Mapping):
-                    diffusion_cfg = {}
+                diffusion_cfg = mapping_section(self.loss_config, "diffusion")
                 prediction_type = diffusion_prediction_type(diffusion_cfg)
                 diffusion_loss_prediction, diffusion_target, _pred_x0 = (
                     _interpret_diffusion_prediction(
